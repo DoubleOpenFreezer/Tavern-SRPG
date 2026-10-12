@@ -1,0 +1,193 @@
+// 把战斗事件 / 战场状态翻译成给 LLM 的文本
+import { SIDE_NAMES, MISSION_NAMES, alive, terrainAt, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn } from './engine.js';
+
+const pos = p => `(${p.x + 1},${p.y + 1})`;
+const KIND = { physical: '物理', magical: '魔法', heal: '治疗' };
+
+function who(r) {
+    // 绑定了世界书的单位附带关键词，方便触发世界书条目
+    return r.wbKey && r.wbKey !== r.name ? `${r.name}〈${r.wbKey}〉` : r.name;
+}
+
+function hpChange(r) {
+    return `HP ${r.hpBefore}→${r.hpAfter}`;
+}
+
+/** 事件属于哪个描写类别 */
+export function eventCategory(e) {
+    switch (e.type) {
+        case 'move': case 'wait': return 'move';
+        case 'attack': return 'attack';
+        case 'skill': return 'skill';
+        case 'phase': case 'terrainHeal': case 'mission': return 'turn';
+        case 'reinforce': return 'reinforce';
+        case 'result': return 'result';
+        default: return 'other';
+    }
+}
+
+/** 是否按设置需要描写该事件 */
+export function shouldNarrate(e, n) {
+    if (e.type === 'result' || e.type === 'mission') return true;
+    const side = e.actor?.side;
+    if (e.type !== 'reinforce' && side === 'enemy' && !n.enemy) return false;
+    if (e.type !== 'reinforce' && side === 'ally' && !n.ally) return false;
+    if (e.type === 'phase' && e.phase === 'enemy' && !n.enemy) return false;
+    if (e.type === 'phase' && e.phase === 'ally' && !n.ally) return false;
+    const cat = eventCategory(e);
+    return n[cat] !== false;
+}
+
+export function formatEvent(e) {
+    switch (e.type) {
+        case 'move':
+            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。`;
+        case 'wait':
+            return `${who(e.actor)} 在${e.terrain}原地待命。`;
+        case 'attack': {
+            let s = `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，造成 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`;
+            if (e.killed) s += `，${e.target.name} 被击败`;
+            if (e.counter) {
+                s += `；${e.target.name} 反击，造成 ${e.counter.damage} 点${KIND[e.counter.atkType]}伤害（${e.actor.name} ${hpChange(e.counter)}）`;
+                if (e.counter.killed) s += `，${e.actor.name} 被击败`;
+            }
+            return s + '。';
+        }
+        case 'skill': {
+            const parts = e.results.map(r => {
+                if (r.heal != null) return `${who(r.target)} 恢复 ${r.heal} 点生命（${hpChange(r)}）`;
+                return `${who(r.target)} 受到 ${r.damage} 点伤害（${hpChange(r)}）${r.killed ? '，被击败' : ''}`;
+            });
+            const desc = e.skill.desc ? `（${e.skill.desc}）` : '';
+            return `${who(e.actor)} 释放${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}：${parts.join('；')}。`;
+        }
+        case 'phase':
+            return e.phase === 'player' ? `—— 第 ${e.turn} 回合 · 我方阶段开始 ——` : `—— 第 ${e.turn} 回合 · ${SIDE_NAMES[e.phase]}阶段 ——`;
+        case 'terrainHeal':
+            return `${who(e.actor)} 借助${e.terrain}恢复了 ${e.heal} 点生命（${hpChange(e)}）。`;
+        case 'reinforce': {
+            const where = `${pos(e.at)}${e.terrain}`;
+            if (!e.units.length) return `${SIDE_NAMES[e.side]}的增援（${e.actor.name}）试图从 ${where} 赶到，但道路被堵住了。`;
+            return `${SIDE_NAMES[e.side]}增援从 ${where} 出现：${e.units.map(who).join('、')}${e.units.length < e.wanted ? `（另有 ${e.wanted - e.units.length} 名被地形堵住）` : ''}。`;
+        }
+        case 'mission':
+            return `任务：${e.text}`;
+        case 'result':
+            return e.result === 'victory'
+                ? `★ 战斗结束：我方胜利！${e.reason || '所有敌人都被击败了'}。`
+                : `✖ 战斗结束：我方战败……${e.reason || ''}。`;
+        default:
+            return '';
+    }
+}
+
+/** 一句话简述（用于“无需描写”的背景信息） */
+function briefEvent(e) {
+    if (e.type === 'phase') return '';
+    return formatEvent(e).replace(/（[^）]*）/g, '');
+}
+
+/**
+ * 组装发送给 LLM 的用户消息
+ * @param {object} battle
+ * @param {object[]} events 待发送事件
+ * @param {object} settings 插件设置
+ * @param {string} note 用户补充说明
+ */
+export function composeMessage(battle, events, settings, note = '') {
+    const n = settings.narration;
+    const narrate = [], brief = [];
+    for (const e of events) {
+        if (shouldNarrate(e, n)) narrate.push(formatEvent(e));
+        else if (n.brief) {
+            const s = briefEvent(e);
+            if (s) brief.push(s);
+        }
+    }
+    const lines = [];
+    if (settings.send.header) lines.push(settings.send.header.trim());
+    const first = Math.min(battle.turn, ...events.map(e => e.turn || battle.turn));
+    lines.push(`〔战场：${battle.mapName}｜${first < battle.turn ? `第 ${first}–${battle.turn} 回合` : `第 ${battle.turn} 回合`}〕`);
+    if (narrate.length) {
+        lines.push('', '【需要描写的行动】');
+        narrate.forEach(s => lines.push(s.startsWith('——') ? s : `· ${s}`));
+    }
+    if (brief.length) {
+        lines.push('', '【背景信息（无需详细描写，一笔带过或略过即可）】');
+        brief.forEach(s => lines.push(`· ${s}`));
+    }
+    if (!narrate.length && !brief.length) {
+        lines.push('', '（本次战场变化无需描写，请继续推进剧情。）');
+    }
+    if (note && note.trim()) {
+        lines.push('', '【用户补充要求】', note.trim());
+    }
+    return lines.join('\n');
+}
+
+/**
+ * 每次生成时注入的战场状态
+ * @param {Record<string,string>} wbContents uid -> 世界书条目内容
+ */
+export function stateSummary(battle, wbContents = {}) {
+    if (!battle?.active) return '';
+    const lines = [];
+    const phase = battle.result ? (battle.result === 'victory' ? '已胜利' : '已战败') : `${SIDE_NAMES[battle.phase] || battle.phase}阶段`;
+    lines.push(`[Tavern-SRPG 战场状态｜${battle.mapName}｜第 ${battle.turn} 回合 · ${phase}]`);
+    if (battle.mapDesc) lines.push(`地图：${battle.mapDesc}`);
+    lines.push(`任务：${missionText(battle)}`);
+    const waves = upcomingWaves(battle);
+    if (waves) lines.push(`增援预告：${waves}`);
+
+    const used = new Set(battle.tiles);
+    const tdesc = [...used].map(id => battle.terrains[id]).filter(Boolean)
+        .map(t => `${t.name}${t.desc ? `：${t.desc}` : ''}`);
+    if (tdesc.length) lines.push(`地形：${tdesc.join('；')}`);
+
+    for (const side of ['player', 'ally', 'enemy']) {
+        const us = battle.units.filter(u => u.side === side);
+        if (!us.length) continue;
+        const desc = us.map(u => {
+            if (u.hp <= 0) return `${u.name}（${u.object ? '已被摧毁' : '已被击败'}）`;
+            const t = terrainAt(battle, u.x, u.y);
+            const tag = u.keyTarget ? '【关键目标】' : u.object ? '【建筑】' : '';
+            return `${u.name}${tag} HP ${u.hp}/${u.maxHp} 位于${pos(u)}${t.name}`;
+        });
+        lines.push(`${SIDE_NAMES[side]}：${desc.join('；')}`);
+    }
+
+    const wb = alive(battle).filter(u => wbContents[u.uid]);
+    if (wb.length) {
+        lines.push('单位设定：');
+        wb.forEach(u => lines.push(`- ${u.name}：${wbContents[u.uid]}`));
+    }
+
+    lines.push('规则：战场上的数值（HP、位置、击败与否）只由 SRPG 战斗系统计算。若用户以自由文字描述行动，只做叙事描写，不要自行判定伤害、击败、位移或改变上述状态。');
+    return lines.join('\n');
+}
+
+/** 任务说明，例如“守城战：保护「城门」，坚守到第 5 回合结束（还剩 3 回合）” */
+export function missionText(battle) {
+    const m = missionOf(battle);
+    const n = Number(m.turns) || 0;
+    const names = list => list.map(u => `「${u.name}」${u.hp > 0 ? '' : '（已摧毁）'}`).join('');
+    const left = n ? `（还剩 ${Math.max(0, n - battle.turn + 1)} 回合）` : '';
+    switch (m.type) {
+        case 'defend':
+            return `${MISSION_NAMES.defend}：敌人会直奔${names(guardTargets(battle)) || '守卫目标'}，保护它不被摧毁${n ? `，坚守到第 ${n} 回合结束${left}` : '，并击退所有敌人'}。`;
+        case 'assault':
+            return `${MISSION_NAMES.assault}：破坏敌方关键目标${names(enemyKeyTargets(battle))}${n ? `，需在第 ${n} 回合结束前完成${left}` : ''}。`;
+        default:
+            return `${MISSION_NAMES.annihilate}：击败所有敌人${n ? `，需在第 ${n} 回合结束前完成${left}` : ''}。`;
+    }
+}
+
+/** 已知的后续增援 */
+export function upcomingWaves(battle) {
+    return (battle.reinforcements || []).map(w => {
+        const t = nextWaveTurn(battle, w);
+        if (t == null) return '';
+        const name = battle.unitDefs?.[w.unitId]?.name || '?';
+        return `第 ${t} 回合 ${SIDE_NAMES[w.side]}${name}×${Math.max(1, Number(w.count) || 1)} 于${pos(w)}`;
+    }).filter(Boolean).join('；');
+}
