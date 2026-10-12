@@ -30,7 +30,32 @@ export function renderBattleTab(app, root) {
     }
     const b = ST.getBattle();
     if (!b?.active) renderSetup(app, root);
+    else if (b.paused) renderPaused(app, root, b);
     else renderActive(app, root, app.bs.playback?.source === b ? app.bs.playback.battle : b);
+}
+
+/** 暂停保持战斗数据，不推进阶段，也不向聊天注入战场。 */
+export function setBattlePaused(app, b, paused) {
+    if (ST.getBattle() !== b || app.bs.busy || b.result) return;
+    b.paused = paused;
+    app.bs.sel = null; app.bs.mode = 'idle'; app.bs.engagement = null;
+    ST.saveBattle();
+    ST.setInjection('');
+    app.updateInjection(); app.render();
+}
+
+function pauseButton(app, b) {
+    return button('暂停战斗', () => setBattlePaused(app, b, true), {
+        icon: 'fa-pause', disabled: !!app.bs.busy || !!b.result,
+        title: '保留进度并停止战场注入；行动结算结束后可暂停',
+    });
+}
+
+function renderPaused(app, root, b) {
+    add(root, h('div.tsrpg-mission', `战斗已暂停：${b.mapName} · 第 ${b.turn} 回合 · ${PHASE[b.phase] || b.phase}`),
+        h('div.tsrpg-muted', '棋盘、HP、技能冷却及待发送行动已保留。暂停期间不注入战场信息、不处理剧情指令；关闭窗口或刷新后仍可继续。'),
+        h('div.tsrpg-row', button('继续战斗', () => setBattlePaused(app, b, false), { icon: 'fa-play', cls: 'primary' })),
+        h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b) })));
 }
 
 // ---------------------------------------------------------------- 开战准备
@@ -169,7 +194,7 @@ function pushUndo(app, b) {
 }
 
 function undo(app) {
-    if (app.bs.busy) return;
+    if (app.bs.busy || ST.getBattle()?.paused) return;
     const snap = app.bs.undo.pop();
     if (!snap) return;
     ST.setBattle(snap);
@@ -188,7 +213,7 @@ function afterAction(app, b, events, before) {
     ST.saveBattle();
     app.updateInjection();
     const notify = () => {
-        if (ST.getBattle() !== b) return;
+        if (ST.getBattle() !== b || b.paused) return;
         if (b.result) toast(b.result === 'victory' ? 'success' : 'error', b.result === 'victory' ? '战斗胜利！' : '战斗失败……');
         else if (!E.alive(b).some(u => u.side === 'player' && !u.acted)) toast('info', '我方单位均已行动，可以结束回合。');
     };
@@ -200,7 +225,7 @@ function afterAction(app, b, events, before) {
 }
 
 function act(app, b, fn) {
-    if (app.bs.busy || ST.getBattle() !== b) return;
+    if (app.bs.busy || b.paused || ST.getBattle() !== b) return;
     try {
         pushUndo(app, b);
         const ev = fn();
@@ -214,7 +239,7 @@ function act(app, b, fn) {
 
 function onCell(app, b, x, y) {
     const ui = app.bs;
-    if (ui.busy || ST.getBattle() !== b) return;
+    if (ui.busy || b.paused || ST.getBattle() !== b) return;
     const u = selUnit(b, ui);
     const at = E.unitAt(b, x, y);
     const key = `${x},${y}`;
@@ -461,7 +486,7 @@ function renderActive(app, root, b) {
             h('div.tsrpg-row.tsrpg-topbar', h('b', `第 ${b.turn} 回合`), status,
                 button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy }),
                 button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
-                quietTurnButton(app, b)),
+                quietTurnButton(app, b), pauseButton(app, b)),
             h('div.tsrpg-board-wrap', refs.board),
             processStatus(app),
             u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.acted ? ' · 已行动' : ''}`) : null,
@@ -497,6 +522,7 @@ function renderActive(app, root, b) {
             button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy, title: '撤销上一步操作' }),
             button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
             quietTurnButton(app, b),
+            pauseButton(app, b),
             manualToggle(app),
             button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
             button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
@@ -560,7 +586,7 @@ function engagementPanel(app, b) {
 }
 
 export async function performEngagement(app, b, narrate = false) {
-    if (app.bs.busy || ST.getBattle() !== b || !app.bs.engagement) return;
+    if (app.bs.busy || b.paused || ST.getBattle() !== b || !app.bs.engagement) return;
     if (narrate && ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
     const plan = app.bs.engagement;
     const actor = E.getUnit(b, plan.unitId);
@@ -575,18 +601,23 @@ export async function performEngagement(app, b, narrate = false) {
         const responses = Object.fromEntries(E.skillAffected(b, actor, skill, plan.x, plan.y).map(t => [t.uid, E.defaultReaction(b, actor, t, app.data.rules, skill)]));
         return E.doSkill(b, actor, skill, plan.x, plan.y, app.data.rules, Math.random, responses);
     });
-    if (!narrate || !events?.length || ST.getBattle() !== b) return;
-    if (ST.isGenerating()) return toast('warning', 'LLM正在生成，本次战斗已保留在待发送行动中。');
+    if (narrate) sendEngagementNarration(app, b, events);
+}
+
+function sendEngagementNarration(app, b, events) {
+    if (!events?.length || ST.getBattle() !== b || b.paused) return false;
+    if (ST.isGenerating()) { toast('warning', 'LLM正在生成，本次战斗已保留在待发送行动中。'); return false; }
     let note = app.bs.note;
     if (app.settings.send.includeInput) note = [note, ST.readMainInput().trim()].filter(Boolean).join('\n');
     const text = composeMessage(b, events, app.settings, note);
-    ST.sendAsUser(text);
+    if (ST.sendAsUser(text) === false) return false;
     const sent = new Set(events);
     b.pending = b.pending.filter(e => !sent.has(e));
     b.log.push(...events.map(formatEvent).filter(Boolean));
     if (b.log.length > 300) b.log.splice(0, b.log.length - 300);
     app.bs.note = '';
     ST.saveBattle(); app.render();
+    return true;
 }
 
 function askReaction(app, b, request) {
@@ -606,8 +637,14 @@ function askReaction(app, b, request) {
         const defend = button('防御', () => settle('defend'), { icon: 'fa-shield', cls: 'primary' });
         const responds = E.canRespond(b, attacker, target, app.data.rules, skill);
         const counter = responds ? button('反击', () => settle('counter'), { icon: 'fa-khanda' }) : null;
+        const generate = reaction => {
+            if (ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
+            settle({ reaction, narrate: true });
+        };
+        const defendNarrate = button('防御并生成描写', () => generate('defend'), { icon: 'fa-comment' });
+        const counterNarrate = responds ? button('反击并生成描写', () => generate('counter'), { icon: 'fa-comment' }) : null;
         const cancel = button('取消本次回合', () => settle(null));
-        const choices = [defend, counter, cancel].filter(Boolean);
+        const choices = [defend, counter, defendNarrate, counterNarrate, cancel].filter(Boolean);
         ui.busy = `等待${target.name}选择${responds ? '反击或防御' : '防御'}`;
         const overlay = h('div.tsrpg-overlay', { onkeydown: e => {
             if (e.key === 'Escape') { e.preventDefault(); settle(null); }
@@ -621,7 +658,8 @@ function askReaction(app, b, request) {
             responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制），只能防御。'),
             h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
             h('small.tsrpg-muted', '防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。'),
-            h('div.tsrpg-row', defend, counter, cancel),
+            h('small.tsrpg-muted', '生成描写：本回合结算完成后，仅发送选择生成的交战；其他行动保留在待发送列表。'),
+            h('div.tsrpg-row', defend, counter, defendNarrate, counterNarrate, cancel),
         ));
         ui.cancelReaction = () => settle(null);
         app.panel.classList.add('tsrpg-reaction-open');
@@ -648,7 +686,7 @@ function manualToggle(app) {
 }
 
 function manualChange(app, b, change) {
-    if (app.bs.busy || ST.getBattle() !== b) return;
+    if (app.bs.busy || b.paused || ST.getBattle() !== b) return;
     pushUndo(app, b);
     try {
         const events = applyManualChange(b, change, app.data);
@@ -691,20 +729,25 @@ function manualPanel(app, b) {
 }
 
 async function endTurn(app, b, quiet = false) {
-    if (app.bs.busy || ST.getBattle() !== b) return;
+    if (app.bs.busy || b.paused || ST.getBattle() !== b) return;
     const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted && !E.isStunned(x)).length;
     if (left && !confirm(`还有 ${left} 个我方单位未行动，确定结束回合吗？`)) return;
     const s = app.settings;
     const ui = app.bs;
     const before = structuredClone(b);
     let events;
+    const narratedActors = new Set();
     ui.busy = '敌方回合结算中……';
     ui.sel = null; ui.mode = 'idle'; ui.engagement = null;
     app.render();
     try {
         events = await runAiPhases(app, b, {
             quiet,
-            chooseReaction: request => askReaction(app, b, request),
+            chooseReaction: async request => {
+                const choice = await askReaction(app, b, request);
+                if (choice?.narrate) narratedActors.add(request.attacker.uid);
+                return choice?.reaction || choice;
+            },
             processEvents: async (snapshot, batch) => {
                 if (s.ui.animate !== false) await playBattleEvents(app, b, snapshot, batch);
             },
@@ -722,9 +765,11 @@ async function endTurn(app, b, quiet = false) {
     ST.saveBattle();
     app.updateInjection();
     app.render();
-    if (ST.getBattle() !== b) return;
+    if (ST.getBattle() !== b || b.paused) return;
     if (b.result) toast(b.result === 'victory' ? 'success' : 'error', b.result === 'victory' ? '战斗胜利！' : '战斗失败……');
-    if (!quiet && app.settings.send.autoOnEndTurn) dispatch(app, b);
+    if (narratedActors.size) {
+        sendEngagementNarration(app, b, events.filter(e => narratedActors.has(e.actor?.uid) && ['attack', 'skill', 'move'].includes(e.type)));
+    } else if (!quiet && app.settings.send.autoOnEndTurn) dispatch(app, b);
 }
 
 /** LLM 在回复里提议的战场变化，等待确认 */
@@ -754,7 +799,7 @@ function proposalPanel(app, b) {
 
 function endBattle(app) {
     const battle = ST.getBattle();
-    if (!battle || app.bs.busy || app.endBattleDialog) return;
+    if (!battle || battle.paused || app.bs.busy || app.endBattleDialog) return;
     const dismiss = () => {
         overlay.remove();
         app.endBattleDialog = null;
@@ -763,7 +808,7 @@ function endBattle(app) {
     const confirmEnd = button('确认结束战斗', () => {
         dismiss();
         // 聊天切换或异步结算后，旧确认框不能清除新战斗。
-        if (ST.getBattle() !== battle || app.bs.busy) return;
+        if (ST.getBattle() !== battle || battle.paused || app.bs.busy) return;
         ST.setBattle(null);
         app.bs = newBattleUi();
         app.updateInjection();
@@ -790,7 +835,7 @@ function endBattle(app) {
 // ---------------------------------------------------------------- 发送
 
 export function dispatch(app, b, forceMode) {
-    if (ST.getBattle() !== b) return;
+    if (ST.getBattle() !== b || b.paused) return;
     if (app.bs.busy) return toast('info', '请等行动过程结束，或点击「跳过过程」。');
     const s = app.settings;
     if (!b.pending.length && !app.bs.note.trim()) {
@@ -809,7 +854,7 @@ export function dispatch(app, b, forceMode) {
 }
 
 function deliver(app, b, text, mode) {
-    if (ST.getBattle() !== b) return false;
+    if (ST.getBattle() !== b || b.paused) return false;
     if (mode === 'send' && ST.isGenerating()) {
         toast('warning', 'LLM 正在生成中，请稍后再发送。');
         return false;

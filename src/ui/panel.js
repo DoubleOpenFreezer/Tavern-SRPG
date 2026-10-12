@@ -343,7 +343,7 @@ export class App {
      */
     battleContext(sections) {
         const b = ST.getBattle();
-        if (!b?.active) return '';
+        if (!b?.active || b.paused) return '';
         const { inject: inj, llm } = this.settings;
         const opts = { ...inj, sections, commands: llm.commands };
         if (sections) Object.assign(opts, { map: true, legend: true, stats: true, skills: true, nearest: true });
@@ -359,7 +359,7 @@ export class App {
         const seq = ++this.injectSeq;
         const s = this.settings;
         const b = ST.getBattle();
-        if (!b?.active) {
+        if (!b?.active || b.paused) {
             this.wbCache = {};
             ST.setInjection('');
             return;
@@ -372,7 +372,7 @@ export class App {
                 if (text) wb[u.uid] = text;
             }
             if (seq !== this.injectSeq) return; // 已有更新的调用
-            if (ST.getBattle() !== b) { this.wbCache = {}; ST.setInjection(''); return; }
+            if (ST.getBattle() !== b || b.paused) { this.wbCache = {}; ST.setInjection(''); return; }
             this.wbCache = wb;
         }
         ST.setInjection(s.inject.enabled ? this.battleContext() : '', s.inject);

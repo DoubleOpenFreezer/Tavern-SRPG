@@ -94,6 +94,12 @@ export function getBattle() {
     return battle && (!battle.profileId || battle.profileId === bound.id) ? battle : null;
 }
 
+/** 暂停的数据仍可用于继续界面，但不参与聊天与生成。 */
+export function isBattleRunning() {
+    const b = getBattle();
+    return !!b?.active && !b.paused;
+}
+
 export function setBattle(battle) {
     const bound = boundProfile();
     if (!bound || (battle?.profileId && battle.profileId !== bound.id)) return false;
@@ -206,7 +212,7 @@ export function substitute(text) {
  * @param {{position?:string, depth?:number, role?:string}} opt
  */
 export function setInjection(text, opt = {}) {
-    if (text && !getBattle()?.active) text = '';
+    if (text && !isBattleRunning()) text = '';
     const c = ctx();
     if (typeof c.setExtensionPrompt !== 'function') return;
     c.setExtensionPrompt(INJECT_KEY, text ? substitute(text) : '', POSITIONS[opt.position] ?? 1, Number(opt.depth) || 0, true, ROLES[opt.role] ?? 0);
@@ -222,7 +228,7 @@ export function readMainInput() {
 }
 
 export function writeMainInput(text) {
-    if (!getBattle()?.active) return false;
+    if (!isBattleRunning()) return false;
     const ta = document.getElementById('send_textarea');
     if (!ta) return;
     ta.value = text;
@@ -231,7 +237,7 @@ export function writeMainInput(text) {
 
 /** 以用户身份发送消息并触发生成 */
 export function sendAsUser(text) {
-    if (!getBattle()?.active) return false;
+    if (!isBattleRunning()) return false;
     writeMainInput(text);
     const btn = document.getElementById('send_but');
     if (btn) btn.click();
@@ -254,7 +260,7 @@ export function chatLength() {
 
 /** 改写一条消息的正文（同时改写当前 swipe）并保存聊天 */
 export async function rewriteMessage(id, text) {
-    if (!getBattle()?.active) return;
+    if (!isBattleRunning()) return;
     const c = ctx();
     const msg = c.chat?.[id];
     if (!msg) return;
@@ -269,7 +275,7 @@ export async function rewriteMessage(id, text) {
  * 兼容新旧两种 generateQuietPrompt 签名。
  */
 export async function quietGenerate(prompt) {
-    if (!getBattle()?.active) throw new Error('当前聊天未绑定资料卡或没有进行中的战斗');
+    if (!isBattleRunning()) throw new Error('当前聊天未绑定资料卡或没有进行中的战斗');
     const c = ctx();
     const fn = c.generateQuietPrompt;
     if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持后台生成（generateQuietPrompt）');

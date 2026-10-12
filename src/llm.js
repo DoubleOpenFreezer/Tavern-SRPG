@@ -22,12 +22,12 @@ export function registerMacros(app) {
         c.registerMacro(name, () => {
             if (sections?.[0] === 'log' && !app.settings.inject.logLines) {
                 const b = getBattle();
-                return b?.active ? (b.log || []).slice(-10).map(l => `- ${l}`).join('\n') : '';
+                return b?.active && !b.paused ? (b.log || []).slice(-10).map(l => `- ${l}`).join('\n') : '';
             }
             return app.battleContext(sections || undefined);
         });
     }
-    c.registerMacro('srpg_turn', () => String(getBattle()?.active ? getBattle().turn : ''));
+    c.registerMacro('srpg_turn', () => String(getBattle()?.active && !getBattle()?.paused ? getBattle().turn : ''));
     return [...Object.keys(MACROS), 'srpg_turn'];
 }
 
@@ -56,13 +56,13 @@ export function registerTool(app) {
         },
         action: async ({ section = 'all', name = '' } = {}) => {
             const b = getBattle();
-            if (!b?.active) return '当前没有进行中的 SRPG 战斗。';
+            if (!b?.active || b.paused) return '当前没有进行中的 SRPG 战斗。';
             if (section === 'unit') return unitInfo(app, b, name);
             if (section === 'log') return (b.log || []).slice(-15).map(l => `- ${l}`).join('\n') || '暂无战斗记录。';
             return app.battleContext(section === 'all' ? undefined : [section]);
         },
         formatMessage: ({ section, name } = {}) => `查询战场：${section === 'unit' ? name : section}`,
-        shouldRegister: () => !!app.settings.tool?.enabled && !!getBattle()?.active,
+        shouldRegister: () => !!app.settings.tool?.enabled && !!getBattle()?.active && !getBattle()?.paused,
     });
     return true;
 }

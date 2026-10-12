@@ -23,7 +23,7 @@ export async function handleMessage(app, mesId, type) {
     const s = app.settings;
     if (!s.llm.commands || type === 'first_message') return;
     let b = ST.getBattle();
-    if (!b?.active) return;
+    if (!b?.active || b.paused) return;
     const msg = ST.getMessage(mesId);
     if (!msg || msg.is_user || msg.is_system) return;
     const chatId = ST.currentChatId();
@@ -40,7 +40,7 @@ export async function handleMessage(app, mesId, type) {
         return;
     }
     if (s.llm.hideBlock) await ST.rewriteMessage(mesId, clean);
-    if (ST.getBattle() !== b || ST.currentChatId() !== chatId) return;
+    if (b.paused || ST.getBattle() !== b || ST.currentChatId() !== chatId) return;
     const cmds = blocks.flatMap(parseCommands);
     if (!cmds.length) return;
 
@@ -58,7 +58,7 @@ export async function handleMessage(app, mesId, type) {
 
 /** 应用一组指令；记录应用前的快照，以便重新生成时撤回 */
 export function applyCommands(app, b, cmds, mesId) {
-    if (ST.getBattle() !== b) return;
+    if (ST.getBattle() !== b || b.paused) return;
     const snapshot = structuredClone(b);
     snapshot.llm = { proposals: null, applied: null };
     app.bs.undo.push(structuredClone(b));
@@ -112,6 +112,7 @@ export function rejectProposals(app, b) {
  */
 export function revertMessage(app, mesId) {
     const b = ST.getBattle();
+    if (b?.paused) return false;
     const st = b?.llm;
     if (st?.proposals?.mesId === mesId) st.proposals = null;
     const ap = st?.applied;
@@ -168,7 +169,7 @@ export async function runAiPhases(app, b, { quiet = false, chooseReaction, proce
     const chatId = ST.currentChatId();
     const events = [];
     const check = () => {
-        if (ST.currentChatId() !== chatId || ST.getBattle() !== b) throw new Error('聊天已切换，本次敌方回合已停止。');
+        if (b.paused || ST.currentChatId() !== chatId || ST.getBattle() !== b) throw new Error('聊天已切换，本次敌方回合已停止。');
     };
     const process = async (before, batch) => {
         if (batch.length && processEvents) await processEvents(before, batch);

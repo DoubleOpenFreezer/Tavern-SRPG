@@ -167,3 +167,35 @@ test('未绑定角色不启动聊天折叠观察器，绑定后启动、解绑�
     refresh();
     assert.equal(disconnected, 1);
 });
+
+test('暂停仍可读取保存进度，但停止提示词、宏、工具、消息改写及剧情指令', async t => {
+    const { settings, profile, raw, app, context, macros, tool, prompts, saves } = fixture(t);
+    settings.bindings['char:alice.png'] = profile.id;
+    settings.tool.enabled = true; settings.llm.commands = true;
+    registerMacros(app); registerTool(app);
+    await app.updateInjection();
+    assert.ok(prompts.at(-1).includes('河畔之战'));
+    raw.paused = true;
+    const before = structuredClone(raw), previousSaves = saves();
+    await app.updateInjection();
+    assert.equal(ST.getBattle(), raw);
+    assert.equal(prompts.at(-1), '');
+    assert.equal(app.battleContext(), '');
+    for (const fn of macros.values()) assert.equal(fn(), '');
+    assert.equal(tool().shouldRegister(), false);
+    const message = context.chat[0].mes;
+    await handleMessage(app, 0, 'normal');
+    revertMessage(app, 0); handleDeleted(app);
+    await ST.rewriteMessage(0, '不应该改写');
+    assert.equal(ST.sendAsUser('不应该发送'), false);
+    assert.equal(ST.writeMainInput('不应该填入'), false);
+    await assert.rejects(ST.quietGenerate('不应该调用'), /没有进行中的战斗/);
+    assert.equal(context.chat[0].mes, message);
+    assert.deepEqual(raw, before);
+    assert.equal(saves(), previousSaves);
+    raw.paused = false;
+    await app.updateInjection();
+    assert.ok(prompts.at(-1).includes('河畔之战'));
+    assert.equal(macros.get('srpg_turn')(), '1');
+    assert.equal(tool().shouldRegister(), true);
+});

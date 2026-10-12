@@ -481,3 +481,68 @@ test('单位特质先选择再编辑，模板与自定义组合保存且切换�
     assert.ok(saves >= 5);
     await new Promise(resolve => setTimeout(resolve, 0));
 });
+
+for (const reaction of ['反击', '防御']) {
+    test(`受击可选择${reaction}并生成描写，仅发送本回合选中的交战`, async t => {
+        const { app, context, click } = setupExchange(t);
+        app.settings.ui.confirmDefense = true;
+        app.settings.send.autoOnEndTurn = true;
+        const sent = [], input = { value: '', dispatchEvent() {} };
+        document.getElementById = id => id === 'send_textarea' ? input : id === 'send_but' ? { click: () => sent.push(input.value) } : null;
+        const b = context.chatMetadata[META_KEY], oldPending = [...b.pending];
+        b.units[0].acted = true;
+        const run = click('结束回合');
+        await waitForReaction(app);
+        find(app.panel, n => n.tag === 'button' && n.textContent === `${reaction}并生成描写`).listeners.click();
+        await run;
+        assert.equal(sent.length, 1);
+        assert.match(sent[0], /兽人.*勇者/);
+        assert.equal(sent[0].includes('任务：'), false);
+        assert.equal(b.units[0].hp, reaction === '反击' ? 80 : 90);
+        assert.equal(b.pending.some(e => e.type === 'attack'), false);
+        assert.ok(oldPending.every(e => b.pending.includes(e)));
+        assert.ok(b.pending.some(e => e.type === 'phase'));
+        assert.equal(app.bs.busy, null);
+    });
+}
+
+test('无法反击时仍可防御并生成描写，取消不发送', async t => {
+    const { app, context, click } = setupExchange(t, 2);
+    app.settings.ui.confirmDefense = true;
+    context.chatMetadata[META_KEY].units[0].acted = true;
+    const run = click('仅结算回合');
+    await waitForReaction(app);
+    assert.ok(find(app.panel, n => n.tag === 'button' && n.textContent === '防御并生成描写'));
+    assert.ok(!find(app.panel, n => n.tag === 'button' && n.textContent === '反击并生成描写'));
+    find(app.panel, n => n.tag === 'button' && n.textContent === '取消本次回合').listeners.click();
+    await run;
+    assert.equal(context.chatMetadata[META_KEY].units[0].hp, 100);
+});
+
+for (const layout of ['float', 'compact']) {
+    test(`${layout}暂停保留战场，旧操作不生效，重新打开可继续`, async t => {
+        const { dispatch, setBattlePaused } = await import('../src/ui/battle.js');
+        const { app, context, root, click } = setupExchange(t);
+        const b = context.chatMetadata[META_KEY];
+        app.settings.ui.layout = layout; app.render();
+        const end = find(root, n => n.tag === 'button' && n.textContent === '仅结算回合');
+        const before = structuredClone(b);
+        click('暂停战斗');
+        assert.equal(b.paused, true);
+        assert.deepEqual(b.units, before.units);
+        assert.deepEqual(b.pending, before.pending);
+        assert.equal(b.turn, before.turn);
+        assert.ok(!find(root, n => n.tag === 'button' && n.textContent === '结束回合'));
+        await end.listeners.click();
+        dispatch(app, b);
+        assert.equal(b.turn, before.turn);
+        app.bs = newBattleUi(); app.render(); // 模拟关闭后重新打开
+        assert.ok(root.textContent.includes('战斗已暂停'));
+        click('继续战斗');
+        assert.equal(b.paused, false);
+        assert.deepEqual(b.units, before.units);
+        app.bs.busy = '等待反应';
+        setBattlePaused(app, b, true);
+        assert.equal(b.paused, false, '中途不允许损坏尚未完成的回合');
+    });
+}

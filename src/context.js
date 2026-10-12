@@ -154,7 +154,7 @@ function unitBlock(b, u, labels, opts) {
  * @param {Record<string,string>} wbContents uid -> 世界书条目内容
  */
 export function buildBattleContext(b, opts = defaultContextOptions(), wbContents = {}) {
-    if (!b?.active) return '';
+    if (!b?.active || b.paused) return '';
     const only = opts.sections ? new Set(opts.sections) : null;
     const want = k => !only || only.has(k);
     const labels = unitLabels(b);
