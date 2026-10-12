@@ -169,22 +169,57 @@ function sampleData() {
 
 export const DEFAULT_HEADER = '【SRPG 战斗系统】以下行动结果已由战斗系统计算完成，请据此生动地描写战斗过程。严格遵循给出的数值与结果（伤害、击败、位置），不要自行改变或追加判定。';
 
-export function defaultSettings() {
-    const sample = sampleData();
+export function defaultRules() {
     return {
-        version: 3,
+        formula: 'subtract', // subtract: 攻-防 ; ratio: 攻²/(攻+防)
+        variance: 10, // 伤害浮动 ±%
+        counter: true, // 普通攻击是否触发反击
+        minDamage: 1,
+        hitEnabled: true, // 命中判定
+        baseHit: 90, // 基础命中率 %
+        agiFactor: 3, // 每 1 点敏捷差影响的命中率 %
+    };
+}
+
+/** 资料卡：一套完整的游戏内容（单位、地形、地图、战斗规则），可以绑定到角色卡 */
+export function makeProfile(over = {}) {
+    return {
+        id: uid('profile'),
+        name: '新资料卡',
+        desc: '',
         terrains: structuredClone(DEFAULT_TERRAINS),
+        units: [],
+        maps: [],
+        rules: defaultRules(),
+        updatedAt: Date.now(),
+        ...over,
+    };
+}
+
+export const SAMPLE_PROFILE_ID = 'profile_sample';
+
+export function sampleProfile() {
+    const sample = sampleData();
+    return makeProfile({
+        id: SAMPLE_PROFILE_ID,
+        name: '示例：哥布林战役',
+        desc: '内置示例：河畔之战（歼灭）、死守城门（守城）、破坏水晶（进攻）。',
         units: sample.units,
         maps: sample.maps,
-        rules: {
-            formula: 'subtract', // subtract: 攻-防 ; ratio: 攻²/(攻+防)
-            variance: 10, // 伤害浮动 ±%
-            counter: true, // 普通攻击是否触发反击
-            minDamage: 1,
-            hitEnabled: true, // 命中判定
-            baseHit: 90, // 基础命中率 %
-            agiFactor: 3, // 每 1 点敏捷差影响的命中率 %
-        },
+    });
+}
+
+/** 资料卡里的内容字段 */
+export const PROFILE_KEYS = ['terrains', 'units', 'maps', 'rules'];
+
+export function defaultSettings() {
+    return {
+        version: 4,
+        profiles: [sampleProfile()],
+        activeProfile: SAMPLE_PROFILE_ID,
+        defaultProfile: SAMPLE_PROFILE_ID, // 没有绑定资料卡的聊天使用它
+        bindings: {}, // 'char:<头像文件名>' | 'group:<群组 id>' -> 资料卡 id
+        declinedEmbeds: {}, // 不再询问导入的角色卡内置资料卡
         narration: {
             move: true, // 描写移动
             attack: true, // 描写普通攻击
@@ -238,4 +273,10 @@ export function defaultSettings() {
             left: null, top: null, width: null, height: null, tab: 'battle',
         },
     };
+}
+
+/** 测试用：把示例资料卡的内容平铺到设置上（units / terrains / maps / rules + 全局设置） */
+export function flatDefaults() {
+    const d = defaultSettings();
+    return { ...d, ...d.profiles[0] };
 }

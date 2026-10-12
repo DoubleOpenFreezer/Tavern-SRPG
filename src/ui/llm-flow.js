@@ -8,7 +8,7 @@ import { buildCommanderPrompt, parseCommanderReply } from '../commander.js';
 
 export function commandOptions(app) {
     const s = app.settings;
-    return { ...s.llm, unitDefs: s.units, terrainDefs: s.terrains, subst: ST.substitute };
+    return { ...s.llm, unitDefs: app.data.units, terrainDefs: app.data.terrains, subst: ST.substitute };
 }
 
 function llmState(b) {
@@ -139,7 +139,7 @@ async function askCommander(app, b, side, group) {
     const s = app.settings;
     // 自动注入已经包含完整战场信息；关闭注入时把信息放进指挥提示里
     const context = s.inject.enabled ? '' : app.battleContext();
-    const { prompt, options } = buildCommanderPrompt(b, side, group, s.rules, { limit: s.llm.options, context, intent: s.llm.intent });
+    const { prompt, options } = buildCommanderPrompt(b, side, group, app.data.rules, { limit: s.llm.options, context, intent: s.llm.intent });
     app.bs.busy = `${E.SIDE_NAMES[side]}指挥官（LLM）正在思考……`;
     app.render();
     await app.updateInjection();
@@ -181,14 +181,14 @@ export async function runAiPhases(app, b) {
             const plan = pick && pick.index > 0 ? options.get(u.uid)?.[pick.index - 1] : null;
             let evs;
             if (plan) {
-                const res = E.actWithPlan(b, u, plan, s.rules);
+                const res = E.actWithPlan(b, u, plan, app.data.rules);
                 evs = res.events;
                 if (res.usedPlan && pick.intent && s.llm.intent) {
                     const main = [...evs].reverse().find(e => ['attack', 'skill', 'wait', 'move'].includes(e.type));
                     if (main) main.intent = pick.intent;
                 }
             } else {
-                evs = E.aiAct(b, u, s.rules);
+                evs = E.aiAct(b, u, app.data.rules);
             }
             events.push(...evs);
         }

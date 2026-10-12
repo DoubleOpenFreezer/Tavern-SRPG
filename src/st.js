@@ -1,5 +1,5 @@
 // SillyTavern 适配层：设置、聊天元数据、世界书、发送消息、提示词注入
-import { MODULE_NAME, META_KEY, defaultSettings } from './defaults.js';
+import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS } from './defaults.js';
 import { normalizeSkill } from './engine.js';
 
 export const ctx = () => SillyTavern.getContext();
@@ -20,17 +20,46 @@ export function getSettings() {
     const all = ctx().extensionSettings;
     if (!all[MODULE_NAME]) all[MODULE_NAME] = defaultSettings();
     else if (!all[MODULE_NAME]._merged) {
-        mergeDefaults(all[MODULE_NAME], defaultSettings());
-        // 旧版技能（kind: 'heal'、无冷却 / 效果字段）升级为新格式
-        for (const u of all[MODULE_NAME].units || []) {
-            (u.skills || []).forEach(normalizeSkill);
-            if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
-        }
-        for (const t of all[MODULE_NAME].terrains || []) if (t.avoid == null) t.avoid = 0;
-        all[MODULE_NAME].version = 3;
-        Object.defineProperty(all[MODULE_NAME], '_merged', { value: true, enumerable: false });
+        const st = all[MODULE_NAME];
+        migrateToProfiles(st);
+        mergeDefaults(st, defaultSettings());
+        for (const p of st.profiles) normalizeProfile(p);
+        st.version = 4;
+        Object.defineProperty(st, '_merged', { value: true, enumerable: false });
     }
     return all[MODULE_NAME];
+}
+
+/** v4 之前，单位 / 地形 / 地图 / 规则直接存在设置里：把它们打包成一张资料卡 */
+export function migrateToProfiles(st) {
+    if (Array.isArray(st.profiles)) return;
+    const legacy = {};
+    for (const k of PROFILE_KEYS) if (k in st) { legacy[k] = st[k]; delete st[k]; }
+    st.profiles = [];
+    if (legacy.units || legacy.maps) {
+        const mine = makeProfile({ name: '我的资料卡', desc: '由旧版数据自动转换', ...legacy });
+        st.profiles.push(mine);
+        st.activeProfile = mine.id;
+        st.defaultProfile = mine.id;
+    }
+    // 旧用户也能拿到新的示例
+    st.profiles.push(sampleProfile());
+    st.activeProfile ||= SAMPLE_PROFILE_ID;
+    st.defaultProfile ||= SAMPLE_PROFILE_ID;
+}
+
+/** 补齐资料卡字段，升级旧格式的技能 / 单位 / 地形 */
+export function normalizeProfile(p) {
+    const fresh = makeProfile();
+    for (const k of ['terrains', 'units', 'maps']) if (!Array.isArray(p[k])) p[k] = fresh[k];
+    p.rules = { ...fresh.rules, ...(p.rules || {}) };
+    p.name ||= '未命名资料卡';
+    for (const u of p.units) {
+        (u.skills || []).forEach(normalizeSkill); // 旧版技能（kind: 'heal'、无冷却 / 效果字段）
+        if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
+    }
+    for (const t of p.terrains) if (t.avoid == null) t.avoid = 0;
+    return p;
 }
 
 export function saveSettings() {
@@ -205,4 +234,55 @@ export async function quietGenerate(prompt) {
     if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持后台生成（generateQuietPrompt）');
     const res = fn.length === 0 ? await fn({ quietPrompt: prompt }) : await fn(prompt, false, false);
     return String(res ?? '');
+}
+
+// ---------------------------------------------------------------- 当前角色 / 群组（用于绑定资料卡）
+
+/**
+ * 当前聊天对应的角色卡或群组
+ * @returns {{key:string, kind:'char'|'group', name:string, characterId?:number, character?:object}|null}
+ */
+export function currentOwner() {
+    const c = ctx();
+    if (c.groupId != null && c.groupId !== '') {
+        const g = (c.groups || []).find(x => String(x.id) === String(c.groupId));
+        return { key: `group:${c.groupId}`, kind: 'group', name: g?.name || '群组' };
+    }
+    const id = c.characterId;
+    const ch = id != null ? c.characters?.[id] : null;
+    if (!ch) return null;
+    return { key: `char:${ch.avatar}`, kind: 'char', name: ch.name, characterId: Number(id), character: ch };
+}
+
+/** 根据绑定键找角色 / 群组名（用于资料卡列表） */
+export function ownerName(key) {
+    const c = ctx();
+    const [kind, ...rest] = key.split(':');
+    const id = rest.join(':');
+    if (kind === 'group') return (c.groups || []).find(g => String(g.id) === id)?.name || null;
+    return (c.characters || []).find(ch => ch.avatar === id)?.name || null;
+}
+
+/** 写入角色卡的 data.extensions（会随角色卡导出） */
+export async function writeCardExtension(characterId, value) {
+    const c = ctx();
+    if (typeof c.writeExtensionField !== 'function') throw new Error('当前 SillyTavern 版本不支持写入角色卡扩展字段');
+    await c.writeExtensionField(characterId, MODULE_NAME, value);
+}
+
+export function readCardExtension(character) {
+    return character?.data?.extensions?.[MODULE_NAME] || null;
+}
+
+/** 确认对话框：优先使用 SillyTavern 的弹窗 */
+export async function confirmPopup(html, text) {
+    const c = ctx();
+    try {
+        if (typeof c.callGenericPopup === 'function' && c.POPUP_TYPE) {
+            return !!(await c.callGenericPopup(html, c.POPUP_TYPE.CONFIRM));
+        }
+    } catch (err) {
+        console.warn('[Tavern-SRPG] 弹窗失败', err);
+    }
+    return window.confirm(text);
 }

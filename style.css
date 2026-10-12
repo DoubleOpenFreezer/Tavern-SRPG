@@ -275,6 +275,13 @@ body.tsrpg-squeeze #sheld {
 .tsrpg-proposal { display: flex; gap: 6px; align-items: flex-start; font-size: 0.9em; padding: 2px 0; cursor: pointer; }
 .tsrpg-proposal input { margin-top: 3px; }
 .tsrpg-proposal.bad { opacity: 0.75; cursor: default; }
+.tsrpg-link { color: var(--tsrpg-accent); cursor: pointer; text-decoration: underline; margin-left: 6px; }
+.tsrpg-owner { border: 1px solid var(--tsrpg-border); border-radius: 8px; padding: 6px 10px 8px; margin-bottom: 8px; }
+.tsrpg-owner .tsrpg-section-title { margin-top: 2px; }
+.tsrpg-active-profile { margin: 4px 0 8px; }
+.tsrpg-profile { border: 1px solid var(--tsrpg-border); border-radius: 8px; padding: 6px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 2px; }
+.tsrpg-profile.active { border-color: var(--tsrpg-accent); background: color-mix(in srgb, var(--tsrpg-accent) 10%, transparent); }
+.tsrpg-profile-note { margin: 0 0 6px; font-size: 0.85em; }
 .tsrpg-macros { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; margin: 4px 0; }
 .tsrpg-macros code { user-select: all; }
 .tsrpg-panel .tsrpg-label + .tsrpg-grid4, .tsrpg-panel .tsrpg-label + .tsrpg-busy { padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--tsrpg-accent) 30%, transparent); font-weight: bold; }

@@ -5,9 +5,10 @@ import { MACROS } from '../llm.js';
 import { COMMANDS } from '../commands.js';
 import { getBattle } from '../st.js';
 import { DEFAULT_HEADER, defaultSettings } from '../defaults.js';
-import { normalizeSkill } from '../engine.js';
+import { allPayload, profilesFromPayload, addProfiles, GLOBAL_KEYS } from '../profiles.js';
+import { normalizeProfile } from '../st.js';
+import { downloadJson, pickJson, today } from './files.js';
 
-const EXPORT_KEYS = ['terrains', 'units', 'maps', 'rules', 'narration', 'send', 'inject'];
 
 export function renderSettingsTab(app, root) {
     clear(root);
@@ -45,18 +46,18 @@ export function renderSettingsTab(app, root) {
             textArea(s.send.header, on(s.send, 'header'), 3),
             button('恢复默认', () => { s.send.header = DEFAULT_HEADER; app.save(); app.render(); }, { icon: 'fa-rotate-left' }))),
 
-        h('div.tsrpg-section-title', '战斗规则'),
+        h('div.tsrpg-section-title', '战斗规则', h('small.tsrpg-muted', `（属于当前资料卡「${app.data.name}」）`)),
         h('div.tsrpg-grid4',
-            field('伤害公式', select([['subtract', '减法：攻 − 防'], ['ratio', '比例：攻² ÷ (攻 + 防)']], s.rules.formula, on(s.rules, 'formula'))),
-            field('伤害浮动 ±%', numInput(s.rules.variance, on(s.rules, 'variance'), { min: 0, max: 50 })),
-            field('最低伤害', numInput(s.rules.minDamage, on(s.rules, 'minDamage'), { min: 0 })),
-            h('div', checkbox('普通攻击触发反击', s.rules.counter, on(s.rules, 'counter'))),
+            field('伤害公式', select([['subtract', '减法：攻 − 防'], ['ratio', '比例：攻² ÷ (攻 + 防)']], app.data.rules.formula, on(app.data.rules, 'formula'))),
+            field('伤害浮动 ±%', numInput(app.data.rules.variance, on(app.data.rules, 'variance'), { min: 0, max: 50 })),
+            field('最低伤害', numInput(app.data.rules.minDamage, on(app.data.rules, 'minDamage'), { min: 0 })),
+            h('div', checkbox('普通攻击触发反击', app.data.rules.counter, on(app.data.rules, 'counter'))),
         ),
         h('div.tsrpg-muted', '技能伤害＝(ATK 或 MATK)×威力% 代入公式。目标所在地形的减伤会在最后乘算。'),
         h('div.tsrpg-grid4',
-            h('div', checkbox('启用命中判定', s.rules.hitEnabled, on(s.rules, 'hitEnabled'))),
-            field('基础命中率 %', numInput(s.rules.baseHit, on(s.rules, 'baseHit'), { min: 0, max: 200 })),
-            field('每点敏捷差 %', numInput(s.rules.agiFactor, on(s.rules, 'agiFactor'), { min: 0, max: 20 })),
+            h('div', checkbox('启用命中判定', app.data.rules.hitEnabled, on(app.data.rules, 'hitEnabled'))),
+            field('基础命中率 %', numInput(app.data.rules.baseHit, on(app.data.rules, 'baseHit'), { min: 0, max: 200 })),
+            field('每点敏捷差 %', numInput(app.data.rules.agiFactor, on(app.data.rules, 'agiFactor'), { min: 0, max: 20 })),
         ),
         h('div.tsrpg-muted', '命中率＝基础命中 ＋（攻方AGI − 守方AGI）× 系数 ＋ 技能命中修正 − 守方地形闪避，限制在 0–100%。普通攻击、反击、伤害技能和对敌方的辅助技能都会判定；对友方的技能、攻击建筑物、必中技能一定命中。'),
 
@@ -133,60 +134,38 @@ export function renderSettingsTab(app, root) {
         checkbox('停靠时让聊天区域让出位置（聊天正文在左侧剩余空间居中）', s.ui.squeeze, on(s.ui, 'squeeze', () => app.updateSqueeze())),
 
         h('div.tsrpg-section-title', '导入 / 导出'),
+        h('div.tsrpg-muted', '这里导出 / 导入的是全部资料卡和全局设置。单张资料卡请在「资料卡」页导出。'),
         h('div.tsrpg-row',
-            button('导出全部定义', () => exportData(s), { icon: 'fa-file-export' }),
-            button('导入', () => importData(app), { icon: 'fa-file-import' }),
+            button('导出全部', () => downloadJson(`tavern-srpg-all-${today()}.json`, allPayload(s)), { icon: 'fa-file-export' }),
+            button('导入', () => importAll(app), { icon: 'fa-file-import' }),
             button('恢复默认设置', () => {
-                if (!confirm('这会清除所有自定义的单位、地形、地图和设置，确定吗？')) return;
+                if (!confirm('把描写、发送、LLM、界面等全局设置恢复为默认值？资料卡（单位、地形、地图、战斗规则）不受影响。')) return;
                 const d = defaultSettings();
-                for (const k of Object.keys(d)) s[k] = d[k];
-                app.save(); app.render();
-            }, { icon: 'fa-triangle-exclamation', cls: 'danger' }),
+                for (const k of GLOBAL_KEYS) s[k] = d[k];
+                app.save(); app.applyLayout(); app.updateInjection(); app.render();
+            }, { icon: 'fa-rotate-left', cls: 'danger' }),
         ),
     );
 }
 
-function exportData(s) {
-    const data = { format: 'tavern-srpg', version: 1 };
-    for (const k of EXPORT_KEYS) data[k] = s[k];
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: `tavern-srpg-${new Date().toISOString().slice(0, 10)}.json` });
-    document.body.append(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-}
-
-function importData(app) {
-    const input = h('input', { type: 'file', accept: '.json,application/json' });
-    input.addEventListener('change', async () => {
-        const file = input.files?.[0];
-        if (!file) return;
-        try {
-            const data = JSON.parse(await file.text());
-            if (data.format !== 'tavern-srpg') throw new Error('不是 Tavern-SRPG 导出文件');
-            const mode = confirm('点击“确定”覆盖现有定义；点击“取消”合并（同 ID 的条目会被覆盖）。');
-            const s = app.settings;
-            for (const k of EXPORT_KEYS) {
-                if (!(k in data)) continue;
-                if (Array.isArray(data[k])) {
-                    if (mode) s[k] = data[k];
-                    else {
-                        const byId = new Map(s[k].map(x => [x.id, x]));
-                        data[k].forEach(x => byId.set(x.id, x));
-                        s[k] = [...byId.values()];
-                    }
-                } else if (data[k] && typeof data[k] === 'object') {
-                    s[k] = { ...s[k], ...data[k] };
-                }
-            }
-            for (const u of s.units || []) (u.skills || []).forEach(normalizeSkill);
-            app.save(); app.render();
-            toast('success', '导入完成');
-        } catch (err) {
-            toast('error', `导入失败：${err.message || err}`);
+async function importAll(app) {
+    try {
+        const data = await pickJson();
+        const s = app.settings;
+        const profiles = profilesFromPayload(data);
+        const replace = profiles.some(p => s.profiles.some(x => x.id === p.id))
+            && confirm('有同名（同 ID）的资料卡。点击“确定”覆盖它们；点击“取消”作为副本导入。');
+        const added = addProfiles(s, profiles, { replace, normalize: normalizeProfile });
+        let globals = false;
+        if (GLOBAL_KEYS.some(k => data[k]) && confirm('文件中还包含全局设置（描写、发送、LLM、界面），要一起导入吗？')) {
+            for (const k of GLOBAL_KEYS) if (data[k] && typeof data[k] === 'object') s[k] = { ...s[k], ...data[k] };
+            globals = true;
         }
-    });
-    input.click();
+        app.save(); app.applyLayout(); app.updateInjection(); app.render();
+        toast('success', `已导入 ${added.length} 张资料卡${globals ? '和全局设置' : ''}`);
+    } catch (err) {
+        if (err?.message !== 'cancelled') toast('error', `导入失败：${err.message || err}`);
+    }
 }
 
 function previewContext(app) {

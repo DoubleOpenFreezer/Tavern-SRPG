@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultSettings, makeMap, makeUnit } from '../src/defaults.js';
+import { flatDefaults as defaultSettings, makeMap, makeUnit } from '../src/defaults.js';
 import * as E from '../src/engine.js';
 import { formatEvent } from '../src/narrator.js';
 import { extractBlocks, parseCommands, applyCommand, previewCommands, commandGuide, findUnit } from '../src/commands.js';

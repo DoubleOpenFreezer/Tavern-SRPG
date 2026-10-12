@@ -31,27 +31,29 @@ export function renderBattleTab(app, root) {
 function renderSetup(app, root) {
     const s = app.settings;
     const ui = app.bs;
-    if (!s.maps.length) {
-        root.append(h('div.tsrpg-empty', '还没有地图。请先在「地图」页创建地图并放置单位。'));
+    if (!app.data.maps.length) {
+        root.append(h('div.tsrpg-empty', `资料卡「${app.data.name}」还没有地图。请先在「地图」页创建地图并放置单位，或在「资料卡」页切换资料卡。`));
         return;
     }
-    if (!s.maps.some(m => m.id === ui.setupMap)) ui.setupMap = s.maps[0].id;
-    const map = s.maps.find(m => m.id === ui.setupMap);
-    const terr = id => s.terrains.find(t => t.id === id) || { name: id, color: '#999' };
-    const unitDefs = new Map(s.units.map(u => [u.id, u]));
+    if (!app.data.maps.some(m => m.id === ui.setupMap)) ui.setupMap = app.data.maps[0].id;
+    const map = app.data.maps.find(m => m.id === ui.setupMap);
+    const terr = id => app.data.terrains.find(t => t.id === id) || { name: id, color: '#999' };
+    const unitDefs = new Map(app.data.units.map(u => [u.id, u]));
     const placed = map.placements.filter(p => unitDefs.has(p.unitId));
     const units = placed.map(p => ({ ...unitDefs.get(p.unitId), x: p.x, y: p.y }));
     const counts = side => units.filter(u => u.side === side && u.kind !== 'object').length;
-    const problems = E.validateMission(map, s.units);
+    const problems = E.validateMission(map, app.data.units);
     // 用一个临时战场生成任务说明与增援预告
-    const preview = E.createBattle(map, s.units, s.terrains);
+    const preview = E.createBattle(map, app.data.units, app.data.terrains);
     const marks = new Map();
     for (const w of map.reinforcements || []) marks.set(`${w.x},${w.y}`, ['m-spawn']);
 
     add(root,
+        h('div.tsrpg-row.tsrpg-muted', h('i.fa-solid.fa-address-card'), ` 资料卡：${app.data.name}`,
+            h('a.tsrpg-link', { onclick: () => app.setTab('profiles') }, '切换 / 绑定')),
         h('div.tsrpg-row',
             h('b', '选择地图：'),
-            select(s.maps.map(m => [m.id, `${m.name}（${m.w}×${m.h}）· ${E.MISSION_NAMES[m.mission?.type || 'annihilate']}`]), map.id, v => { ui.setupMap = v; app.render(); }),
+            select(app.data.maps.map(m => [m.id, `${m.name}（${m.w}×${m.h}）· ${E.MISSION_NAMES[m.mission?.type || 'annihilate']}`]), map.id, v => { ui.setupMap = v; app.render(); }),
             button('开始战斗', () => startBattle(app, map), { icon: 'fa-flag', cls: 'primary', disabled: problems.length > 0 }),
         ),
         h('div.tsrpg-mission', h('i.fa-solid.fa-bullseye'), ' ', missionText(preview)),
@@ -65,9 +67,11 @@ function renderSetup(app, root) {
 
 function startBattle(app, map) {
     const s = app.settings;
-    const problems = E.validateMission(map, s.units);
+    const problems = E.validateMission(map, app.data.units);
     if (problems.length) return toast('warning', problems.join('；'));
-    const b = E.createBattle(map, s.units, s.terrains);
+    const b = E.createBattle(map, app.data.units, app.data.terrains);
+    b.profileId = app.data.id;
+    b.profileName = app.data.name;
     b.pending.push({ type: 'mission', turn: 1, text: missionText(b) });
     b.pending.push({ type: 'phase', turn: 1, phase: 'player' });
     app.bs = newBattleUi();
@@ -193,14 +197,14 @@ function onCell(app, b, x, y) {
     }
     if ((ui.mode === 'action' || ui.mode === 'attack') && u && at && E.isFoe(at, u)) {
         if (E.attackTargets(b, u).includes(at)) {
-            act(app, b, () => E.doAttack(b, u, at, app.settings.rules));
+            act(app, b, () => E.doAttack(b, u, at, app.data.rules));
             return;
         }
     }
     if (ui.mode === 'skill' && u) {
         const sk = u.skills.find(s => s.id === ui.skillId);
         if (sk && E.skillTargetTiles(b, u, sk).some(([tx, ty]) => tx === x && ty === y)) {
-            act(app, b, () => E.doSkill(b, u, sk, x, y, app.settings.rules));
+            act(app, b, () => E.doSkill(b, u, sk, x, y, app.data.rules));
             return;
         }
         ui.mode = 'action'; ui.skillId = null;
@@ -236,7 +240,7 @@ function onHover(app, b, x, y, refs) {
                 refs.board.querySelector(`[data-x="${ax}"][data-y="${ay}"]`)?.classList.add('m-area');
             }
             const aff = E.skillAffected(b, u, sk, x, y);
-            const rules = app.settings.rules;
+            const rules = app.data.rules;
             const fx = sk.effects.filter(e => !['heal', 'heal_pct'].includes(e.type)).map(e => E.effectLabel(e));
             preview = aff.map(t => {
                 const bits = [];
@@ -254,7 +258,7 @@ function onHover(app, b, x, y, refs) {
     }
     const at = E.unitAt(b, x, y);
     if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
-        const p = E.previewAttack(b, u, at, app.settings.rules);
+        const p = E.previewAttack(b, u, at, app.data.rules);
         const killed = p.damage >= at.hp;
         preview = `攻击 ${at.name}：命中 ${p.hit}%，伤害 ${p.damage}${killed ? '（可击败）' : ''}`
             + (p.counter ? `；反击${killed ? '（若未击败）' : ''}：命中 ${p.counterHit}%，伤害 ${p.counter}` : '');
@@ -335,7 +339,7 @@ function actionPanel(app, b, u) {
             else if (sk.uses) label += ` ${sk.usesLeft}/${sk.uses}`;
             // 只作用于自身的技能直接释放
             const onClick = side === 'self'
-                ? () => act(app, b, () => E.doSkill(b, u, sk, u.x, u.y, app.settings.rules))
+                ? () => act(app, b, () => E.doSkill(b, u, sk, u.x, u.y, app.data.rules))
                 : () => { ui.mode = 'skill'; ui.skillId = sk.id; app.render(); };
             return button(label, onClick, {
                 icon: sk.kind !== 'support' ? 'fa-wand-sparkles' : side === 'enemy' ? 'fa-skull' : sk.effects.some(e => e.type.startsWith('heal')) ? 'fa-heart' : 'fa-shield-heart',
@@ -350,7 +354,7 @@ function actionPanel(app, b, u) {
 
 /** 战斗中允许修改世界书绑定：把单位定义里的绑定同步到战场单位 */
 function syncBindings(s, b) {
-    const defs = new Map(s.units.map(u => [u.id, u]));
+    const defs = new Map(app.data.units.map(u => [u.id, u]));
     let changed = false;
     for (const u of b.units) {
         const d = defs.get(u.defId);
@@ -460,7 +464,7 @@ async function endTurn(app, b) {
         }
         app.bs.busy = null;
     } else {
-        events = E.endPlayerPhase(b, s.rules);
+        events = E.endPlayerPhase(b, app.data.rules);
     }
     b.pending.push(...events);
     app.bs.undo = [];

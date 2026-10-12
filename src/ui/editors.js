@@ -13,6 +13,12 @@ export function newEditorUi() {
     return { unitId: null, terrainId: null, mapId: null, tool: 'paint', brush: 'plain', placeUnit: null, wbBook: null };
 }
 
+/** 编辑器顶部：提示正在编辑哪张资料卡 */
+function profileNote(app) {
+    return h('div.tsrpg-row.tsrpg-muted.tsrpg-profile-note', h('i.fa-solid.fa-address-card'), ` 正在编辑资料卡：${app.data.name}`,
+        h('a.tsrpg-link', { onclick: () => app.setTab('profiles') }, '切换'));
+}
+
 function listItem(active, onclick, ...content) {
     return h(`div.tsrpg-list-item${active ? '.active' : ''}`, { onclick }, ...content);
 }
@@ -22,12 +28,12 @@ function listItem(active, onclick, ...content) {
 export function renderUnitsTab(app, root) {
     clear(root);
     const s = app.settings, ed = app.ed;
-    if (!s.units.some(u => u.id === ed.unitId)) ed.unitId = s.units[0]?.id || null;
-    const cur = s.units.find(u => u.id === ed.unitId);
+    if (!app.data.units.some(u => u.id === ed.unitId)) ed.unitId = app.data.units[0]?.id || null;
+    const cur = app.data.units.find(u => u.id === ed.unitId);
 
     const add = side => {
         const u = makeUnit({ side, name: side === 'enemy' ? '新敌人' : side === 'ally' ? '新友军' : '新角色' });
-        s.units.push(u); ed.unitId = u.id; app.save(); app.render();
+        app.data.units.push(u); ed.unitId = u.id; app.save(); app.render();
     };
     const list = h('div.tsrpg-list',
         h('div.tsrpg-row',
@@ -35,12 +41,13 @@ export function renderUnitsTab(app, root) {
             button('敌方', () => add('enemy'), { icon: 'fa-plus' }),
             button('友军', () => add('ally'), { icon: 'fa-plus' })),
         SIDES.map(([side, label]) => {
-            const us = s.units.filter(u => u.side === side);
+            const us = app.data.units.filter(u => u.side === side);
             if (!us.length) return null;
             return [h('div.tsrpg-list-group', label), us.map(u => listItem(u.id === ed.unitId, () => { ed.unitId = u.id; ed.wbBook = null; app.render(); },
                 renderToken({ ...u, maxHp: 0 }), h('span', u.name), u.wb ? h('i.fa-solid.fa-book.tsrpg-muted', { title: `${u.wb.book} › ${u.wb.label}` }) : null))];
         }),
     );
+    root.append(profileNote(app));
     root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', cur ? unitForm(app, cur) : h('div.tsrpg-empty', '新建一个单位开始吧。'))));
 }
 
@@ -56,12 +63,12 @@ function unitForm(app, u) {
             button('复制', () => {
                 const c = structuredClone(u); c.id = uid('unit'); c.name += '·副本';
                 c.skills.forEach(sk => { sk.id = uid('sk'); });
-                s.units.push(c); app.ed.unitId = c.id; app.save(); app.render();
+                app.data.units.push(c); app.ed.unitId = c.id; app.save(); app.render();
             }, { icon: 'fa-copy' }),
             button('删除', () => {
                 if (!confirm(`删除单位「${u.name}」？地图上它的放置和增援也会被移除。`)) return;
-                s.units.splice(s.units.indexOf(u), 1);
-                s.maps.forEach(m => {
+                app.data.units.splice(app.data.units.indexOf(u), 1);
+                app.data.maps.forEach(m => {
                     m.placements = m.placements.filter(p => p.unitId !== u.id);
                     m.reinforcements = (m.reinforcements || []).filter(w => w.unitId !== u.id);
                 });
@@ -240,16 +247,17 @@ function wbBinder(app, u) {
 export function renderTerrainsTab(app, root) {
     clear(root);
     const s = app.settings, ed = app.ed;
-    if (!s.terrains.some(t => t.id === ed.terrainId)) ed.terrainId = s.terrains[0]?.id || null;
-    const cur = s.terrains.find(t => t.id === ed.terrainId);
+    if (!app.data.terrains.some(t => t.id === ed.terrainId)) ed.terrainId = app.data.terrains[0]?.id || null;
+    const cur = app.data.terrains.find(t => t.id === ed.terrainId);
     const list = h('div.tsrpg-list',
         button('新建地形', () => {
             const t = { id: uid('ter'), name: '新地形', symbol: '', color: '#a1887f', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '' };
-            s.terrains.push(t); ed.terrainId = t.id; app.save(); app.render();
+            app.data.terrains.push(t); ed.terrainId = t.id; app.save(); app.render();
         }, { icon: 'fa-plus' }),
-        s.terrains.map(t => listItem(t.id === ed.terrainId, () => { ed.terrainId = t.id; app.render(); },
+        app.data.terrains.map(t => listItem(t.id === ed.terrainId, () => { ed.terrainId = t.id; app.render(); },
             h('span.tsrpg-swatch', { style: { background: t.color, color: contrast(t.color) } }, t.symbol || ''), h('span', t.name))),
     );
+    root.append(profileNote(app));
     root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', cur ? terrainForm(app, cur) : null)));
 }
 
@@ -259,11 +267,11 @@ function terrainForm(app, t) {
     return h('div',
         h('div.tsrpg-row', h('b.tsrpg-form-title', t.name), h('div.tsrpg-spacer'),
             button('删除', () => {
-                if (s.terrains.length <= 1) return toast('warning', '至少保留一种地形');
-                const fallback = s.terrains.find(x => x !== t);
+                if (app.data.terrains.length <= 1) return toast('warning', '至少保留一种地形');
+                const fallback = app.data.terrains.find(x => x !== t);
                 if (!confirm(`删除地形「${t.name}」？地图上使用它的格子会变为「${fallback.name}」。`)) return;
-                s.terrains.splice(s.terrains.indexOf(t), 1);
-                s.maps.forEach(m => { m.tiles = m.tiles.map(id => id === t.id ? fallback.id : id); });
+                app.data.terrains.splice(app.data.terrains.indexOf(t), 1);
+                app.data.maps.forEach(m => { m.tiles = m.tiles.map(id => id === t.id ? fallback.id : id); });
                 app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' })),
         h('div.tsrpg-grid3',
@@ -294,16 +302,17 @@ window.addEventListener('mouseup', () => { painting = false; lastPaint = null; }
 export function renderMapsTab(app, root) {
     clear(root);
     const s = app.settings, ed = app.ed;
-    if (!s.maps.some(m => m.id === ed.mapId)) ed.mapId = s.maps[0]?.id || null;
-    const cur = s.maps.find(m => m.id === ed.mapId);
+    if (!app.data.maps.some(m => m.id === ed.mapId)) ed.mapId = app.data.maps[0]?.id || null;
+    const cur = app.data.maps.find(m => m.id === ed.mapId);
     const list = h('div.tsrpg-list',
         button('新建地图', () => {
             const m = makeMap({ tiles: undefined });
-            m.tiles = new Array(m.w * m.h).fill(s.terrains[0]?.id || 'plain');
-            s.maps.push(m); ed.mapId = m.id; app.save(); app.render();
+            m.tiles = new Array(m.w * m.h).fill(app.data.terrains[0]?.id || 'plain');
+            app.data.maps.push(m); ed.mapId = m.id; app.save(); app.render();
         }, { icon: 'fa-plus' }),
-        s.maps.map(m => listItem(m.id === ed.mapId, () => { ed.mapId = m.id; app.render(); }, h('span', m.name), h('small.tsrpg-muted', ` ${m.w}×${m.h}`))),
+        app.data.maps.map(m => listItem(m.id === ed.mapId, () => { ed.mapId = m.id; app.render(); }, h('span', m.name), h('small.tsrpg-muted', ` ${m.w}×${m.h}`))),
     );
+    root.append(profileNote(app));
     root.append(h('div.tsrpg-editor.wide', list, h('div.tsrpg-form', cur ? mapForm(app, cur) : h('div.tsrpg-empty', '新建一张地图吧。'))));
 }
 
@@ -331,7 +340,7 @@ function missionEditor(app, m) {
     const s = app.settings;
     const ms = m.mission;
     const [label, hint] = TURNS_LABEL[ms.type] || TURNS_LABEL.annihilate;
-    const unitOpts = s.units.map(u => [u.id, `${u.name}（${SIDES.find(x => x[0] === u.side)?.[1]}）`]);
+    const unitOpts = app.data.units.map(u => [u.id, `${u.name}（${SIDES.find(x => x[0] === u.side)?.[1]}）`]);
     const num = (w, k, min = 0, offset = 0) => numInput((Number(w[k]) || 0) + offset, v => { w[k] = Math.max(min, v - offset); app.save(); app.render(); }, { min: min + offset });
     return h('div',
         h('div.tsrpg-section-title', '任务'),
@@ -342,7 +351,7 @@ function missionEditor(app, m) {
         h('div.tsrpg-muted', MISSION_HELP[ms.type]),
         h('div.tsrpg-section-title', '增援', h('div.tsrpg-spacer'),
             button('添加增援', () => {
-                m.reinforcements.push(makeWave({ unitId: s.units.find(u => u.side === 'enemy')?.id || s.units[0]?.id, x: m.w - 1, y: Math.floor(m.h / 2) }));
+                m.reinforcements.push(makeWave({ unitId: app.data.units.find(u => u.side === 'enemy')?.id || app.data.units[0]?.id, x: m.w - 1, y: Math.floor(m.h / 2) }));
                 app.save(); app.render();
             }, { icon: 'fa-plus' })),
         m.reinforcements.length ? m.reinforcements.map(w => h('div.tsrpg-skill',
@@ -367,11 +376,11 @@ function mapForm(app, m) {
     const set = (k, rerender = false) => v => { m[k] = v; app.save(); if (rerender) app.render(); };
     m.mission ||= { type: 'annihilate', turns: 0 };
     m.reinforcements ||= [];
-    if (!s.terrains.some(t => t.id === ed.brush)) ed.brush = s.terrains[0]?.id;
-    if (!s.units.some(u => u.id === ed.placeUnit)) ed.placeUnit = s.units[0]?.id || null;
-    const terrains = new Map(s.terrains.map(t => [t.id, t]));
+    if (!app.data.terrains.some(t => t.id === ed.brush)) ed.brush = app.data.terrains[0]?.id;
+    if (!app.data.units.some(u => u.id === ed.placeUnit)) ed.placeUnit = app.data.units[0]?.id || null;
+    const terrains = new Map(app.data.terrains.map(t => [t.id, t]));
     const terr = id => terrains.get(id) || { name: id, color: '#999' };
-    const unitDefs = new Map(s.units.map(u => [u.id, u]));
+    const unitDefs = new Map(app.data.units.map(u => [u.id, u]));
 
     const apply = (x, y, cell) => {
         if (ed.tool === 'paint') {
@@ -433,11 +442,11 @@ function mapForm(app, m) {
         h('div.tsrpg-row', h('b.tsrpg-form-title', m.name), h('div.tsrpg-spacer'),
             button('复制', () => {
                 const c = structuredClone(m); c.id = uid('map'); c.name += '·副本';
-                s.maps.push(c); ed.mapId = c.id; app.save(); app.render();
+                app.data.maps.push(c); ed.mapId = c.id; app.save(); app.render();
             }, { icon: 'fa-copy' }),
             button('删除', () => {
                 if (!confirm(`删除地图「${m.name}」？`)) return;
-                s.maps.splice(s.maps.indexOf(m), 1); app.save(); app.render();
+                app.data.maps.splice(app.data.maps.indexOf(m), 1); app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' })),
         h('div.tsrpg-grid3',
             field('名称', textInput(m.name, set('name', true))),
@@ -455,10 +464,10 @@ function mapForm(app, m) {
                 m.tiles.fill(ed.brush); app.save(); app.render();
             }, { icon: 'fa-fill-drip' }) : null,
         ),
-        ed.tool === 'paint' ? h('div.tsrpg-palette', s.terrains.map(t =>
+        ed.tool === 'paint' ? h('div.tsrpg-palette', app.data.terrains.map(t =>
             h(`div.tsrpg-palette-item${t.id === ed.brush ? '.active' : ''}`, { onclick: () => { ed.brush = t.id; app.render(); }, title: t.desc },
                 h('span.tsrpg-swatch', { style: { background: t.color, color: contrast(t.color) } }, t.symbol || ''), t.name))) : null,
-        ['place', 'spawn'].includes(ed.tool) ? h('div.tsrpg-palette', s.units.map(u =>
+        ['place', 'spawn'].includes(ed.tool) ? h('div.tsrpg-palette', app.data.units.map(u =>
             h(`div.tsrpg-palette-item${u.id === ed.placeUnit ? '.active' : ''}`, { onclick: () => { ed.placeUnit = u.id; app.render(); } },
                 renderToken({ ...u, maxHp: 0 }), u.name))) : null,
         h('div.tsrpg-muted', ed.tool === 'spawn'

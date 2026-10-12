@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultSettings } from '../src/defaults.js';
+import { flatDefaults as defaultSettings } from '../src/defaults.js';
 import * as E from '../src/engine.js';
 import { composeMessage } from '../src/narrator.js';
 import { buildBattleContext, defaultContextOptions } from '../src/context.js';

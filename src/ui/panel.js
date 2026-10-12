@@ -3,6 +3,9 @@ import { h, clear, button } from './dom.js';
 import { renderBattleTab, newBattleUi } from './battle.js';
 import { renderUnitsTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
 import { renderSettingsTab } from './settings.js';
+import { renderProfilesTab } from './profiles-tab.js';
+import { getProfile, profileFor, addProfiles, PROFILE_FORMAT } from '../profiles.js';
+import { toast } from './dom.js';
 import { buildBattleContext } from '../context.js';
 import { commandGuide } from '../commands.js';
 import { alive } from '../engine.js';
@@ -10,6 +13,7 @@ import * as ST from '../st.js';
 
 const TABS = [
     ['battle', '战场', 'fa-chess-board', renderBattleTab],
+    ['profiles', '资料卡', 'fa-address-card', renderProfilesTab],
     ['units', '单位', 'fa-users', renderUnitsTab],
     ['terrains', '地形', 'fa-mountain-sun', renderTerrainsTab],
     ['maps', '地图', 'fa-map', renderMapsTab],
@@ -33,6 +37,68 @@ export class App {
 
     save() {
         ST.saveSettings();
+    }
+
+    /** 当前使用的资料卡（单位、地形、地图、战斗规则） */
+    get data() {
+        const s = this.settings;
+        let p = getProfile(s, s.activeProfile);
+        if (!p) {
+            p = s.profiles[0];
+            s.activeProfile = p.id;
+        }
+        return p;
+    }
+
+    /** 切换资料卡 */
+    switchProfile(id, { quiet = false } = {}) {
+        const s = this.settings;
+        const p = getProfile(s, id);
+        if (!p || s.activeProfile === id) return false;
+        s.activeProfile = id;
+        this.save();
+        this.ed = newEditorUi();
+        this.bs.setupMap = null;
+        if (!quiet) toast('info', `已切换到资料卡「${p.name}」`);
+        this.render();
+        return true;
+    }
+
+    /** 打开聊天时：切换到该角色 / 群组绑定的资料卡；角色卡里带有资料卡时询问是否导入 */
+    async syncProfileWithChat() {
+        const owner = ST.currentOwner();
+        if (!owner) return;
+        const s = this.settings;
+        await this.offerEmbeddedProfile(owner);
+        const target = profileFor(s, owner.key);
+        if (target && target.id !== s.activeProfile) {
+            this.switchProfile(target.id, { quiet: true });
+            toast('info', `${owner.name} 使用资料卡「${target.name}」`);
+        }
+    }
+
+    async offerEmbeddedProfile(owner) {
+        if (owner.kind !== 'char') return;
+        const s = this.settings;
+        const embedded = ST.readCardExtension(owner.character);
+        if (embedded?.format !== PROFILE_FORMAT || !embedded.profile) return;
+        const p = embedded.profile;
+        if (s.bindings[owner.key]) return; // 已经绑定过（可能就是自己写进去的）
+        if (getProfile(s, p.id)) { s.bindings[owner.key] = p.id; this.save(); return; }
+        const stamp = `${p.id}@${p.updatedAt || 0}`;
+        if (s.declinedEmbeds[owner.key] === stamp) return;
+        const ok = await ST.confirmPopup(
+            `<h3>角色卡附带了 SRPG 资料卡</h3><p>「${owner.name}」带有资料卡「${p.name}」（${(p.units || []).length} 个单位、${(p.maps || []).length} 张地图）。</p><p>导入并绑定到这个角色吗？</p>`,
+            `「${owner.name}」带有 SRPG 资料卡「${p.name}」，导入并绑定到这个角色吗？`);
+        if (!ok) {
+            s.declinedEmbeds[owner.key] = stamp;
+            this.save();
+            return;
+        }
+        const [added] = addProfiles(s, [p], { normalize: ST.normalizeProfile });
+        s.bindings[owner.key] = added.id;
+        this.save();
+        toast('success', `已导入资料卡「${added.name}」并绑定到 ${owner.name}`);
     }
 
     get isOpen() {
@@ -279,8 +345,13 @@ export class App {
         this.updateFab();
     }
 
-    onChatChanged() {
+    async onChatChanged() {
         this.bs = newBattleUi();
+        try {
+            await this.syncProfileWithChat();
+        } catch (err) {
+            console.warn('[Tavern-SRPG] 同步资料卡失败', err);
+        }
         this.updateInjection();
         this.render();
     }

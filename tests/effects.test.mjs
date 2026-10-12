@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultSettings, makeMap, makeUnit, makeSkill } from '../src/defaults.js';
+import { flatDefaults as defaultSettings, makeMap, makeUnit, makeSkill } from '../src/defaults.js';
 import * as E from '../src/engine.js';
 import { composeMessage } from '../src/narrator.js';
 import { buildBattleContext } from '../src/context.js';
