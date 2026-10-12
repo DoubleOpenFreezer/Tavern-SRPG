@@ -348,6 +348,8 @@ function unitCard(b, u, compact = false) {
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),
         h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), h('span', `HP ${u.hp}/${u.maxHp}`)),
         statGrid(u),
+        (u.traits || []).length ? h('div.tsrpg-statuses', u.traits.map(t =>
+            h('span.tsrpg-chip', { title: `${t.desc || ''}\n${E.traitSummary(t)}` }, `特质：${t.name}`))) : null,
         (u.statuses || []).length ? h('div.tsrpg-statuses', u.statuses.map(st => {
             const def = E.EFFECTS[st.type] || {};
             return h(`span.tsrpg-chip${def.debuff ? '.debuff' : ''}`, { title: def.help || '' }, `${E.effectLabel(st)} · ${st.turns}回合`);

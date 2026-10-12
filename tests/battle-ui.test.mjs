@@ -20,6 +20,7 @@ class TestNode {
     }
     get firstChild() { return this.children[0]; }
     get textContent() { return this.text + this.children.map(c => c.textContent).join(''); }
+    set textContent(value) { this.text = String(value); this.children = []; }
     append(...children) {
         for (const child of children) { child.parent = this; this.children.push(child); }
     }
@@ -441,4 +442,42 @@ test('资料卡多选绑定可同时关联多个角色，解除一个不会影�
     assert.equal(app.settings.bindings['char:test.png'], undefined);
     assert.equal(app.settings.bindings['char:second.png'], app.data.id);
     assert.equal(syncs, 1);
+});
+
+test('单位特质先选择再编辑，模板与自定义组合保存且切换单位不串选', async t => {
+    const { app, root } = setup(t);
+    window.addEventListener = () => {};
+    const { renderUnitsTab, newEditorUi } = await import('../src/ui/editors.js');
+    app.ed = newEditorUi();
+    let saves = 0;
+    app.save = () => { saves++; };
+    app.render = () => renderUnitsTab(app, root);
+    app.render();
+    const click = label => {
+        const n = find(root, n => n.tag === 'button' && n.textContent === label);
+        assert.ok(n, label); n.listeners.click();
+    };
+    const u = app.data.units.find(u => u.id === app.ed.unitId);
+    click('强壮');
+    assert.equal(u.traits[0].name, '强壮');
+    assert.deepEqual(u.traits[0].effects, [{ type: 'atk_up', value: 10 }]);
+    click('再生');
+    assert.equal(app.ed.traitId, u.traits[1].id);
+    click('添加特质效果');
+    assert.equal(u.traits[1].effects.length, 2);
+    assert.equal(find(root, n => n.tag === 'input' && n.value === '强壮'), undefined, '不会展开所有特质表单');
+    const picker = find(root, n => n.tag === 'select' && n.value === app.ed.traitId);
+    picker.listeners.change({ target: { value: u.traits[0].id } });
+    assert.equal(app.ed.traitId, u.traits[0].id);
+    click('删除特质');
+    assert.equal(u.traits.length, 1);
+    assert.equal(app.ed.traitId, u.traits[0].id);
+    click('创建新特质');
+    assert.equal(u.traits[1].name, '新特质');
+    assert.deepEqual(u.traits[1].effects, []);
+    app.ed.unitId = app.data.units.find(other => other.id !== u.id).id;
+    app.render();
+    assert.equal(app.ed.traitId, null);
+    assert.ok(saves >= 5);
+    await new Promise(resolve => setTimeout(resolve, 0));
 });

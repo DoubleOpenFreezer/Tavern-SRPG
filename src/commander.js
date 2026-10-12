@@ -1,5 +1,5 @@
 // LLM 指挥官：把 AI 单位的可选行动列给 LLM，由 LLM 选择。纯逻辑部分（描述、提示词、解析回复）。
-import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit } from './engine.js';
+import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit, attractionTargets } from './engine.js';
 import { unitLabels } from './context.js';
 import { exchangePreview } from './exchange.js';
 
@@ -60,6 +60,8 @@ export function buildCommanderPrompt(b, side, group, rules, { limit = 6, context
         const opts = aiOptions(b, u, rules, limit);
         if (!opts.length) continue;
         options.set(u.uid, opts);
+        const attracted = attractionTargets(b, u);
+        if (attracted.length) lines.push(`特质优先目标：${attracted.map(t => `${t.name}[${labels[t.uid]}]`).join('、')}。如果存在可执行且能命中的攻击，优先攻击这些目标；无法攻击时可选择其他行动。`);
         lines.push(`${labels[u.uid]} ${u.name}（HP ${u.hp}/${u.maxHp}，位于 ${pos(u.x, u.y)}）：`);
         opts.forEach((p, i) => lines.push(`  ${i + 1}. ${describePlan(b, u, p, rules, labels)}`));
     }

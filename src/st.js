@@ -1,5 +1,5 @@
 // SillyTavern 适配层：设置、聊天元数据、世界书、发送消息、提示词注入
-import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS } from './defaults.js';
+import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, uid, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS } from './defaults.js';
 import { normalizeSkill } from './engine.js';
 import { profileFor } from './profiles.js';
 
@@ -66,6 +66,13 @@ export function normalizeProfile(p) {
     p.rules = { ...fresh.rules, ...(p.rules || {}) };
     p.name ||= '未命名资料卡';
     for (const u of p.units) {
+        if (!Array.isArray(u.traits)) u.traits = [];
+        u.traits = u.traits.filter(t => t && typeof t === 'object');
+        for (const t of u.traits) {
+            t.id ||= uid('trait');
+            t.name ||= '未命名特质';
+            if (!Array.isArray(t.effects)) t.effects = [];
+        }
         (u.skills || []).forEach(normalizeSkill); // 旧版技能（kind: 'heal'、无冷却 / 效果字段）
         if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
     }

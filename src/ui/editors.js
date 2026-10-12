@@ -1,7 +1,7 @@
 // 单位 / 地形 / 地图 编辑器
 import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast } from './dom.js';
-import { makeUnit, makeSkill, makeMap, makeWave, uid, DEFAULT_TERRAINS } from '../defaults.js';
-import { MISSION_NAMES, EFFECTS, normalizeSkill } from '../engine.js';
+import { makeUnit, makeTrait, makeSkill, makeMap, makeWave, uid, DEFAULT_TERRAINS } from '../defaults.js';
+import { MISSION_NAMES, EFFECTS, TRAIT_EFFECTS, traitSummary, normalizeSkill } from '../engine.js';
 import * as ST from '../st.js';
 
 const SIDES = [['player', '我方'], ['ally', '友军'], ['enemy', '敌方']];
@@ -114,9 +114,53 @@ function unitForm(app, u) {
         ],
         h('div.tsrpg-section-title', '世界书绑定'),
         wbBinder(app, u),
+        traitEditor(app, u),
         u.kind === 'object' ? null : skillEditor(app, u),
         field('备注', textArea(u.notes, set('notes'), 2, '仅自己可见的备注')),
     );
+}
+
+/** 选择一个特质编辑；同一特质可组合任意多个效果。 */
+function traitEditor(app, u) {
+    u.traits ||= [];
+    const ed = app.ed;
+    if (ed.traitUnitId !== u.id || !u.traits.some(t => t.id === ed.traitId)) {
+        ed.traitUnitId = u.id;
+        ed.traitId = u.traits[0]?.id || null;
+    }
+    const t = u.traits.find(t => t.id === ed.traitId);
+    const save = () => app.save();
+    const add = (over = {}) => {
+        const t = makeTrait(over); u.traits.push(t); ed.traitId = t.id; save(); app.render();
+    };
+    return h('div.tsrpg-skill-editor',
+        h('div.tsrpg-section-title', '特质'),
+        h('small.tsrpg-muted', '常驻生效，不消耗行动、不被驱散。多个特质的属性加成相加；描述用于战斗描写，实际效果由下面的组合决定。修改后在新战斗或新摆放的单位上生效。'),
+        h('div.tsrpg-row.tsrpg-skill-picker',
+            u.traits.length ? field('选择已有特质', select(u.traits.map(t => [t.id, t.name || '未命名特质']), ed.traitId, id => { ed.traitId = id; app.render(); })) : null,
+            button('创建新特质', () => add(), { icon: 'fa-plus' }),
+            button('强壮', () => add({ name: '强壮', desc: '体格强健，攻击力常驻提高10%。', effects: [{ type: 'atk_up', value: 10 }] })),
+            button('再生', () => add({ name: '再生', desc: '每次自己阵营回合开始恢复生命。', effects: [{ type: 'regen', value: 10 }] })),
+            button('欠揍', () => add({ name: '欠揍', desc: '容易吸引周围敌人的注意。', effects: [{ type: 'attract', value: 3 }] }))),
+        t ? h('div.tsrpg-skill',
+            field('特质名称', textInput(t.name, v => { t.name = v; save(); })),
+            field('特质描述', textArea(t.desc, v => { t.desc = v; save(); }, 2, '写下特质的表现与设定')),
+            h('div.tsrpg-muted', traitSummary(t) || '尚未配置效果'),
+            (t.effects || []).map(e => {
+                const d = TRAIT_EFFECTS[e.type] || {};
+                return h('div.tsrpg-effect',
+                    select(Object.entries(TRAIT_EFFECTS).map(([id, def]) => [id, def.name]), e.type, type => {
+                        e.type = type; e.value = TRAIT_EFFECTS[type].value; e.flat = false; save(); app.render();
+                    }),
+                    h('label.tsrpg-inline', numInput(e.value, v => { e.value = v; save(); }, { min: 0 }),
+                        h('small', d.stat && e.flat ? '固定值' : d.unit || '')),
+                    d.stat && !d.flat ? checkbox('固定数值加成', e.flat, v => { e.flat = v; save(); app.render(); }) : h('small.tsrpg-muted', e.type === 'attract' ? '优先攻击，无法攻击时可选其他目标' : d.stat ? '常驻' : '自己阵营回合开始触发'),
+                    button('', () => { t.effects.splice(t.effects.indexOf(e), 1); save(); app.render(); }, { icon: 'fa-xmark', cls: 'danger', title: '移除特质效果' }));
+            }),
+            h('div.tsrpg-row',
+                button('添加特质效果', () => { (t.effects ||= []).push({ type: 'atk_up', value: 10 }); save(); app.render(); }, { icon: 'fa-plus' }),
+                button('删除特质', () => { u.traits.splice(u.traits.indexOf(t), 1); save(); app.render(); }, { icon: 'fa-trash', cls: 'danger' })))
+            : h('div.tsrpg-muted', '先选择已有特质，或创建一个新特质。'));
 }
 
 /** 先选择技能，再编辑；切换单位或删除技能时修正当前选择。 */

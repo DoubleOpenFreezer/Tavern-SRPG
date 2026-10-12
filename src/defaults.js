@@ -35,12 +35,17 @@ export function makeUnit(over = {}) {
         attackOrder: 'normal', // last：普通攻击时，对能回击的非后手目标让出先攻
         flying: false,
         ai: 'aggressive',
+        traits: [], // 常驻特质 [{ id, name, desc, effects }]
         skills: [],
         wb: null,
         aliases: '', // 故事中的名字 / 别名，逗号分隔，可以写 {{user}} {{char}}
         notes: '',
         ...over,
     };
+}
+
+export function makeTrait(over = {}) {
+    return { id: uid('trait'), name: '新特质', desc: '', effects: [], ...over };
 }
 
 export function makeSkill(over = {}) {

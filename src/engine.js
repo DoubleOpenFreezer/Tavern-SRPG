@@ -197,6 +197,35 @@ export const EFFECTS = {
     stun: { name: '眩晕', group: '减益', noValue: true, debuff: true, help: '无法行动' },
 };
 
+// 特质与临时状态独立：不会过期，也不能被驱散。
+export const TRAIT_EFFECTS = {
+    ...Object.fromEntries(Object.entries(EFFECTS).filter(([, d]) => d.stat)),
+    regen: { name: '回合开始恢复HP（比例）', value: 10, unit: '% 最大HP' },
+    regen_flat: { name: '回合开始恢复HP（固定）', value: 5, unit: 'HP' },
+    attract: { name: '吸引敌人优先攻击', value: 3, unit: '格（0＝全图）' },
+};
+
+export function traitEffects(u) {
+    return (Array.isArray(u.traits) ? u.traits : []).flatMap(t =>
+        (Array.isArray(t.effects) ? t.effects : []).filter(e => TRAIT_EFFECTS[e.type]).map(e => ({ ...e, traitName: t.name || '未命名特质' })));
+}
+
+export function traitSummary(t) {
+    return (t.effects || []).filter(e => TRAIT_EFFECTS[e.type]).map(e => {
+        const d = TRAIT_EFFECTS[e.type], value = Math.max(0, Number(e.value) || 0);
+        if (d.stat) return `${d.stat.toUpperCase()}${d.sign > 0 ? '+' : '-'}${value}${d.flat || e.flat ? (d.stat === 'mov' ? '格' : '点') : '%'}`;
+        if (e.type === 'attract') return `${value ? value + '格内' : '全图'}敌人优先攻击自己`;
+        return `自己阵营回合开始恢复${value}${e.type === 'regen' ? '%最大HP' : 'HP'}`;
+    }).join('、');
+}
+
+/** 吸引优先级依据敌人本阶段起点；不会限制玩家的攻击选择。 */
+export function attractionTargets(b, unit) {
+    const px = unit.phaseX ?? unit.x, py = unit.phaseY ?? unit.y;
+    return alive(b).filter(t => isFoe(t, unit) && traitEffects(t).some(e =>
+        e.type === 'attract' && (!Number(e.value) || dist(t.x, t.y, px, py) <= Math.max(0, Number(e.value) || 0))));
+}
+
 export function effectLabel(e) {
     const def = EFFECTS[e.type];
     if (!def) return e.type;
@@ -236,10 +265,10 @@ export function isStunned(u) {
 export function stat(u, key) {
     const base = Number(u[key]) || 0;
     let pct = 0, flat = 0;
-    for (const s of u.statuses || []) {
+    for (const s of [...(u.statuses || []), ...traitEffects(u)]) {
         const def = EFFECTS[s.type];
         if (def?.stat !== key) continue;
-        if (def.flat) flat += def.sign * (Number(s.value) || 0);
+        if (def.flat || s.flat) flat += def.sign * (Number(s.value) || 0);
         else pct += def.sign * (Number(s.value) || 0);
     }
     return Math.max(0, Math.round(base * (1 + pct / 100) + flat));
@@ -693,6 +722,7 @@ function effectScore(b, caster, t, e, rules) {
 function candidatesAt(b, unit, x, y, rules, filter, mode) {
     const ox = unit.x, oy = unit.y;
     unit.x = x; unit.y = y;
+    const preferred = attractionTargets(b, unit);
     const list = [];
     const consider = (cand) => { if (cand.score > 0) list.push(cand); };
     if (mode === 'attack') {
@@ -707,7 +737,7 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
                 score -= calcDamage(b, t, unit, t.atkType, 100, rules, Math.random, true) * (hitChance(b, t, unit, rules) / 100) * survive * 0.3;
                 if (preview.firstStrike && preview.counter >= unit.hp) score *= 1 - preview.counterHit / 100;
             }
-            consider({ kind: 'attack', x, y, target: t, score: Math.max(0.5, score) });
+            consider({ kind: 'attack', x, y, target: t, score: Math.max(0.5, score) + (preferred.includes(t) ? 10000 : 0) });
         }
     }
     for (const sk of unit.skills || []) {
@@ -733,6 +763,7 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
             }
             // 有次数限制或冷却的技能，略微倾向于保留
             if (sk.uses || Number(sk.cooldown) > 1) score *= 0.9;
+            if (mode === 'attack' && score > 0 && aff.some(t => preferred.includes(t))) score += 10000;
             consider({ kind: 'skill', x, y, skill: sk, tx, ty, targets: aff, score });
         }
     }
@@ -763,15 +794,16 @@ export function goalTargets(b, unit) {
     if (forced.length) return forced;
     const type = missionOf(b).type;
     const foes = alive(b).filter(t => isFoe(t, unit));
+    const preferred = attractionTargets(b, unit);
     const fighters = foes.filter(t => !t.object);
     if (team(unit) === 'E' && type === 'defend') {
         const guards = foes.filter(t => t.keyTarget);
-        if (guards.length) return guards;
+        if (guards.length) return [...new Set([...preferred, ...guards])];
     }
     if (team(unit) === 'P' && type === 'assault') {
         return [...fighters, ...foes.filter(t => t.object && t.keyTarget)];
     }
-    return fighters;
+    return [...new Set([...preferred, ...fighters])];
 }
 
 function fieldDist(b, field, t) {
@@ -838,7 +870,8 @@ function* aiActSteps(b, unit, rules, rng = Math.random) {
     if (unit.ai === 'aggressive') {
         const goals = goalTargets(b, unit);
         const fromMe = distanceField(b, unit, [[unit.x, unit.y]]);
-        const ordered = goals.map(g => [g, fieldDist(b, fromMe, g)]).sort((a, c) => a[1] - c[1]);
+        const preferred = attractionTargets(b, unit);
+        const ordered = goals.map(g => [g, fieldDist(b, fromMe, g)]).sort((a, c) => Number(preferred.includes(c[0])) - Number(preferred.includes(a[0])) || a[1] - c[1]);
         for (const [g] of ordered) {
             plan = bestAction(b, unit, nodes, rules, t => t === g);
             if (plan) break;
@@ -914,6 +947,15 @@ function startTurnEffects(b, side) {
             const before = u.hp;
             u.hp += amount;
             events.push({ type: 'terrainHeal', turn: b.turn, actor: ref(u), terrain: t.name, heal: amount, hpBefore: before, hpAfter: u.hp });
+        }
+        for (const e of traitEffects(u)) {
+            if (!['regen', 'regen_flat'].includes(e.type) || u.hp >= u.maxHp) continue;
+            const value = Math.max(0, Number(e.value) || 0);
+            const amount = Math.round(e.type === 'regen' ? u.maxHp * value / 100 : value);
+            if (amount <= 0) continue;
+            const before = u.hp;
+            u.hp = Math.min(u.maxHp, u.hp + amount);
+            events.push({ type: 'dot', turn: b.turn, actor: ref(u), effect: 'regen', label: `特质：${e.traitName}`, hpBefore: before, hpAfter: u.hp });
         }
         for (const st of u.statuses || []) {
             const v = Math.max(1, Math.round(u.maxHp * (Number(st.value) || 0) / 100));
@@ -1161,6 +1203,7 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         object,
         keyTarget: !!d.keyTarget,
         skills: object ? [] : (d.skills || []).map(s => ({ ...normalizeSkill(structuredClone(s)), usesLeft: Number(s.uses) || 0, cdLeft: 0 })),
+        traits: structuredClone(Array.isArray(d.traits) ? d.traits : []),
         statuses: [],
         phaseX: x, phaseY: y,
         wb: d.wb ? structuredClone(d.wb) : null,

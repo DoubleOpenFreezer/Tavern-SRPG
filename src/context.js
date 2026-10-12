@@ -1,6 +1,6 @@
 // 给 LLM 读取的战场信息：地图网格、单位详情、地形图例、任务、最近战况
 import {
-    SIDE_NAMES, EFFECTS, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist,
+    SIDE_NAMES, EFFECTS, traitSummary, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist,
 } from './engine.js';
 import { missionText, upcomingWaves, skillSummary } from './narrator.js';
 
@@ -121,6 +121,7 @@ function unitBlock(b, u, labels, opts) {
         const extra = u.object ? '不会行动' : `${u.atkType === 'magical' ? '魔法' : '物理'}攻击 射程${u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`}`;
         lines.push(`  ${st}｜${extra}`);
     }
+    for (const t of u.traits || []) lines.push(`  常驻特质【${t.name}】：${traitSummary(t)}${t.desc ? `；${t.desc}` : ''}`);
     const sts = (u.statuses || []).map(s => `${effectLabel(s)}（${EFFECTS[s.type]?.debuff ? '减益' : '增益'}，剩 ${s.turns} 回合）`);
     if (sts.length) lines.push(`  状态：${sts.join('、')}`);
     if (!u.object && b.phase === u.side && !b.result) {
