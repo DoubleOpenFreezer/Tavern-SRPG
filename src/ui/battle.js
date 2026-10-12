@@ -237,6 +237,8 @@ function onHover(app, b, x, y, refs) {
             const fx = sk.effects.filter(e => !['heal', 'heal_pct'].includes(e.type)).map(e => E.effectLabel(e));
             preview = aff.map(t => {
                 const bits = [];
+                const hit = E.skillHitChance(b, u, sk, t, rules);
+                if (hit < 100) bits.push(`命中${hit}%`);
                 if (sk.kind !== 'support') bits.push(`-${E.calcDamage(b, u, t, sk.kind, sk.power, rules, Math.random, true)}`);
                 for (const e of sk.effects) {
                     if (e.type === 'heal') bits.push(`+${E.calcHeal(u, t, Number(e.value) || 0, rules, Math.random, true)}`);
@@ -250,7 +252,9 @@ function onHover(app, b, x, y, refs) {
     const at = E.unitAt(b, x, y);
     if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
         const p = E.previewAttack(b, u, at, app.settings.rules);
-        preview = `攻击 ${at.name}：预计造成 ${p.damage} 伤害${p.damage >= at.hp ? '（击败）' : ''}${p.counter ? `，受到反击 ${p.counter}` : ''}`;
+        const killed = p.damage >= at.hp;
+        preview = `攻击 ${at.name}：命中 ${p.hit}%，伤害 ${p.damage}${killed ? '（可击败）' : ''}`
+            + (p.counter ? `；反击${killed ? '（若未击败）' : ''}：命中 ${p.counterHit}%，伤害 ${p.counter}` : '');
     }
     refs.preview.textContent = preview || '';
     clear(refs.hoverInfo);
@@ -258,7 +262,7 @@ function onHover(app, b, x, y, refs) {
     if (show) refs.hoverInfo.append(unitCard(b, show, true));
     else {
         const t = E.terrainAt(b, x, y);
-        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''} ${t.desc || ''}`));
+        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''} ${t.desc || ''}`));
         for (const w of b.reinforcements || []) {
             const turn = E.nextWaveTurn(b, w);
             if (w.x !== x || w.y !== y || turn == null) continue;
@@ -300,7 +304,7 @@ function statGrid(u) {
     };
     if (u.object) return h('div.tsrpg-stats', cell('DEF', 'def'), cell('MDEF', 'mdef'));
     return h('div.tsrpg-stats',
-        cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('MOV', 'mov'),
+        cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('AGI', 'agi'), cell('MOV', 'mov'),
         h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))));
 }
 

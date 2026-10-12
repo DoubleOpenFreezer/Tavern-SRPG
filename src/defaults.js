@@ -7,15 +7,15 @@ export function uid(prefix = 'id') {
 }
 
 export const DEFAULT_TERRAINS = [
-    { id: 'plain', name: '平原', symbol: '', color: '#9ccc65', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '开阔的草地，视野良好' },
-    { id: 'forest', name: '森林', symbol: '♣', color: '#2e7d32', moveCost: 2, passable: true, flyable: true, defBonus: 20, healPct: 0, desc: '茂密的树林，便于隐蔽，减少受到的伤害' },
-    { id: 'mountain', name: '山地', symbol: '▲', color: '#8d6e63', moveCost: 3, passable: true, flyable: true, defBonus: 30, healPct: 0, desc: '崎岖的山岭，难以行进但易守难攻' },
-    { id: 'river', name: '河流', symbol: '≈', color: '#42a5f5', moveCost: 1, passable: false, flyable: true, defBonus: 0, healPct: 0, desc: '湍急的河水，步行无法通过，飞行单位可越过' },
-    { id: 'canyon', name: '峡谷', symbol: '▼', color: '#5d4037', moveCost: 1, passable: false, flyable: true, defBonus: 0, healPct: 0, desc: '深不见底的裂谷，只有飞行单位能跨越' },
-    { id: 'bridge', name: '桥梁', symbol: '=', color: '#bcaaa4', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '横跨河流的木桥，兵家必争之地' },
-    { id: 'desert', name: '沙地', symbol: '∴', color: '#ffe082', moveCost: 2, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '松软的沙地，拖慢行军' },
-    { id: 'fort', name: '堡垒', symbol: '⌂', color: '#b0bec5', moveCost: 1, passable: true, flyable: true, defBonus: 30, healPct: 10, desc: '坚固的据点，回合开始时恢复10%生命' },
-    { id: 'wall', name: '城墙', symbol: '█', color: '#455a64', moveCost: 1, passable: false, flyable: false, defBonus: 0, healPct: 0, desc: '高耸的石墙，任何单位都无法通过' },
+    { id: 'plain', name: '平原', symbol: '', color: '#9ccc65', moveCost: 1, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '开阔的草地，视野良好' },
+    { id: 'forest', name: '森林', symbol: '♣', color: '#2e7d32', moveCost: 2, passable: true, flyable: true, avoid: 15, defBonus: 20, healPct: 0, desc: '茂密的树林，便于隐蔽，提高闪避并减少受到的伤害' },
+    { id: 'mountain', name: '山地', symbol: '▲', color: '#8d6e63', moveCost: 3, passable: true, flyable: true, avoid: 20, defBonus: 30, healPct: 0, desc: '崎岖的山岭，难以行进但易守难攻' },
+    { id: 'river', name: '河流', symbol: '≈', color: '#42a5f5', moveCost: 1, passable: false, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '湍急的河水，步行无法通过，飞行单位可越过' },
+    { id: 'canyon', name: '峡谷', symbol: '▼', color: '#5d4037', moveCost: 1, passable: false, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '深不见底的裂谷，只有飞行单位能跨越' },
+    { id: 'bridge', name: '桥梁', symbol: '=', color: '#bcaaa4', moveCost: 1, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '横跨河流的木桥，兵家必争之地' },
+    { id: 'desert', name: '沙地', symbol: '∴', color: '#ffe082', moveCost: 2, passable: true, flyable: true, avoid: -10, defBonus: 0, healPct: 0, desc: '松软的沙地，拖慢行军，难以闪避' },
+    { id: 'fort', name: '堡垒', symbol: '⌂', color: '#b0bec5', moveCost: 1, passable: true, flyable: true, avoid: 10, defBonus: 30, healPct: 10, desc: '坚固的据点，回合开始时恢复10%生命' },
+    { id: 'wall', name: '城墙', symbol: '█', color: '#455a64', moveCost: 1, passable: false, flyable: false, avoid: 0, defBonus: 0, healPct: 0, desc: '高耸的石墙，任何单位都无法通过' },
 ];
 
 export function makeUnit(over = {}) {
@@ -27,7 +27,7 @@ export function makeUnit(over = {}) {
         side: 'player',
         icon: '',
         color: '',
-        hp: 20, atk: 8, matk: 4, def: 4, mdef: 3, mov: 5,
+        hp: 20, atk: 8, matk: 4, def: 4, mdef: 3, agi: 5, mov: 5,
         rangeMin: 1, rangeMax: 1,
         atkType: 'physical',
         flying: false,
@@ -49,6 +49,8 @@ export function makeSkill(over = {}) {
         rangeMin: 1, rangeMax: 1,
         radius: 0, // 0 = 单体，>0 = 以目标格为中心的范围
         cooldown: 0, // 冷却回合：N = 每 N 回合可用一次，0 = 无冷却
+        hitMod: 0, // 命中修正（±%）
+        sureHit: false, // 必中
         uses: 0, // 0 = 无限
         effects: [], // 预设效果 [{ type, value, turns }]，type 见 engine.js 的 EFFECTS
         desc: '',
@@ -85,22 +87,22 @@ export function makeWave(over = {}) {
 }
 
 function sampleData() {
-    const knight = makeUnit({ id: 'unit_sample_knight', name: '骑士', side: 'player', icon: '骑', hp: 32, atk: 12, matk: 2, def: 9, mdef: 3, mov: 5,
+    const knight = makeUnit({ id: 'unit_sample_knight', name: '骑士', side: 'player', icon: '骑', hp: 32, atk: 12, matk: 2, def: 9, mdef: 3, agi: 4, mov: 5,
         skills: [
-            makeSkill({ id: 'sk_sample_charge', name: '冲锋', kind: 'physical', power: 160, cooldown: 2, desc: '全力冲刺后的重击' }),
+            makeSkill({ id: 'sk_sample_charge', name: '冲锋', kind: 'physical', power: 160, cooldown: 2, sureHit: true, desc: '全力冲刺后的重击' }),
             makeSkill({ id: 'sk_sample_provoke', name: '挑衅', kind: 'support', target: 'self', rangeMin: 0, rangeMax: 0, cooldown: 3,
                 effects: [{ type: 'taunt', value: 0, turns: 1 }, { type: 'def_up', value: 20, turns: 1 }], desc: '高举盾牌大声挑衅，吸引所有敌人的攻击' }),
         ] });
-    const mage = makeUnit({ id: 'unit_sample_mage', name: '法师', side: 'player', icon: '法', hp: 22, atk: 3, matk: 13, def: 3, mdef: 9, mov: 4, rangeMin: 1, rangeMax: 2, atkType: 'magical',
+    const mage = makeUnit({ id: 'unit_sample_mage', name: '法师', side: 'player', icon: '法', hp: 22, atk: 3, matk: 13, def: 3, mdef: 9, agi: 6, mov: 4, rangeMin: 1, rangeMax: 2, atkType: 'magical',
         skills: [
-            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, cooldown: 2, desc: '在目标处炸开的火球' }),
+            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, cooldown: 2, hitMod: 10, desc: '在目标处炸开的火球' }),
             makeSkill({ id: 'sk_sample_heal', name: '治愈', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, cooldown: 1,
                 effects: [{ type: 'heal', value: 120, turns: 0 }], desc: '温暖的治愈之光' }),
             makeSkill({ id: 'sk_sample_guard', name: '守护之光', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, radius: 1, cooldown: 3,
                 effects: [{ type: 'def_up', value: 30, turns: 2 }, { type: 'mdef_up', value: 30, turns: 2 }], desc: '笼罩同伴的金色光幕' }),
         ] });
-    const goblin = makeUnit({ id: 'unit_sample_goblin', name: '哥布林', side: 'enemy', icon: '哥', hp: 18, atk: 9, matk: 0, def: 3, mdef: 1, mov: 5 });
-    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive',
+    const goblin = makeUnit({ id: 'unit_sample_goblin', name: '哥布林', side: 'enemy', icon: '哥', hp: 18, atk: 9, matk: 0, def: 3, mdef: 1, agi: 8, mov: 5 });
+    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, agi: 9, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive',
         skills: [makeSkill({ id: 'sk_sample_poison', name: '毒箭', kind: 'physical', power: 80, rangeMin: 2, rangeMax: 3, cooldown: 3,
             effects: [{ type: 'poison', value: 10, turns: 2 }], desc: '箭头涂着绿色的毒液' })] });
 
@@ -169,7 +171,7 @@ export const DEFAULT_HEADER = '【SRPG 战斗系统】以下行动结果已由�
 export function defaultSettings() {
     const sample = sampleData();
     return {
-        version: 2,
+        version: 3,
         terrains: structuredClone(DEFAULT_TERRAINS),
         units: sample.units,
         maps: sample.maps,
@@ -178,6 +180,9 @@ export function defaultSettings() {
             variance: 10, // 伤害浮动 ±%
             counter: true, // 普通攻击是否触发反击
             minDamage: 1,
+            hitEnabled: true, // 命中判定
+            baseHit: 90, // 基础命中率 %
+            agiFactor: 3, // 每 1 点敏捷差影响的命中率 %
         },
         narration: {
             move: true, // 描写移动

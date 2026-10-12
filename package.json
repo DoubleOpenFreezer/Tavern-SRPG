@@ -1,10 +1,10 @@
 {
   "name": "tavern-srpg",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "SillyTavern 战棋（SRPG）扩展",
   "scripts": {
-    "test": "node --test tests/engine.test.mjs tests/narrator.test.mjs tests/mission.test.mjs tests/effects.test.mjs"
+    "test": "node --test tests/engine.test.mjs tests/narrator.test.mjs tests/mission.test.mjs tests/effects.test.mjs tests/hit.test.mjs"
   }
 }

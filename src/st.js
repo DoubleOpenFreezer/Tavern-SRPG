@@ -22,8 +22,12 @@ export function getSettings() {
     else if (!all[MODULE_NAME]._merged) {
         mergeDefaults(all[MODULE_NAME], defaultSettings());
         // 旧版技能（kind: 'heal'、无冷却 / 效果字段）升级为新格式
-        for (const u of all[MODULE_NAME].units || []) (u.skills || []).forEach(normalizeSkill);
-        all[MODULE_NAME].version = 2;
+        for (const u of all[MODULE_NAME].units || []) {
+            (u.skills || []).forEach(normalizeSkill);
+            if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
+        }
+        for (const t of all[MODULE_NAME].terrains || []) if (t.avoid == null) t.avoid = 0;
+        all[MODULE_NAME].version = 3;
         Object.defineProperty(all[MODULE_NAME], '_merged', { value: true, enumerable: false });
     }
     return all[MODULE_NAME];

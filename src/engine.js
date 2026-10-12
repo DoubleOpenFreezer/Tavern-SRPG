@@ -182,6 +182,7 @@ export const EFFECTS = {
     matk_up: { name: '魔攻上升', group: '增益', stat: 'matk', sign: 1, value: 30, unit: '%' },
     def_up: { name: '防御力上升', group: '增益', stat: 'def', sign: 1, value: 30, unit: '%' },
     mdef_up: { name: '魔防上升', group: '增益', stat: 'mdef', sign: 1, value: 30, unit: '%' },
+    agi_up: { name: '敏捷上升', group: '增益', stat: 'agi', sign: 1, value: 30, unit: '%', help: '提高命中与闪避' },
     mov_up: { name: '移动力上升', group: '增益', stat: 'mov', sign: 1, value: 2, unit: '格', flat: true },
     regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
     taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
@@ -189,6 +190,7 @@ export const EFFECTS = {
     matk_down: { name: '魔攻下降', group: '减益', stat: 'matk', sign: -1, value: 30, unit: '%', debuff: true },
     def_down: { name: '防御力下降', group: '减益', stat: 'def', sign: -1, value: 30, unit: '%', debuff: true },
     mdef_down: { name: '魔防下降', group: '减益', stat: 'mdef', sign: -1, value: 30, unit: '%', debuff: true },
+    agi_down: { name: '敏捷下降', group: '减益', stat: 'agi', sign: -1, value: 30, unit: '%', debuff: true, help: '降低命中与闪避' },
     mov_down: { name: '移动力下降', group: '减益', stat: 'mov', sign: -1, value: 2, unit: '格', flat: true, debuff: true },
     poison: { name: '中毒', group: '减益', value: 10, unit: '% 最大HP / 回合', debuff: true, help: '每次自己阵营的阶段开始时损失生命，不会因此倒下' },
     stun: { name: '眩晕', group: '减益', noValue: true, debuff: true, help: '无法行动' },
@@ -213,6 +215,8 @@ export function normalizeSkill(sk) {
     if (!Array.isArray(sk.effects)) sk.effects = [];
     if (!sk.target) sk.target = sk.kind === 'support' ? 'ally' : 'enemy';
     if (sk.cooldown == null) sk.cooldown = 0;
+    if (sk.hitMod == null) sk.hitMod = 0;
+    if (sk.sureHit == null) sk.sureHit = false;
     return sk;
 }
 
@@ -288,6 +292,29 @@ export function calcHeal(caster, target, power, rules, rng = Math.random, expect
     return Math.min(v, target.maxHp - target.hp);
 }
 
+/**
+ * 命中率（0–100）：基础命中 + (攻方AGI − 守方AGI) × 系数 + 修正 − 守方地形闪避。
+ * 对友方的行动、对建筑物的攻击、关闭命中系统时，必定命中。
+ */
+export function hitChance(b, attacker, defender, rules, mod = 0) {
+    if (rules.hitEnabled === false || defender.object || !isFoe(attacker, defender)) return 100;
+    const base = Number(rules.baseHit ?? 90);
+    const k = Number(rules.agiFactor ?? 3);
+    const avoid = Number(terrainAt(b, defender.x, defender.y).avoid) || 0;
+    const v = base + (stat(attacker, 'agi') - stat(defender, 'agi')) * k + (Number(mod) || 0) - avoid;
+    return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+/** 技能对某个目标的命中率 */
+export function skillHitChance(b, unit, skill, t, rules) {
+    if (skill.sureHit || !isFoe(unit, t)) return 100;
+    return hitChance(b, unit, t, rules, skill.hitMod);
+}
+
+function rollHit(chance, rng) {
+    return chance >= 100 || (chance > 0 && rng() * 100 < chance);
+}
+
 function applyDamage(u, dmg) {
     const before = u.hp;
     u.hp = Math.max(0, u.hp - dmg);
@@ -333,11 +360,19 @@ export function attackTargets(b, unit, fromX = unit.x, fromY = unit.y) {
 
 export function previewAttack(b, unit, target, rules) {
     const dmg = calcDamage(b, unit, target, unit.atkType, 100, rules, Math.random, true);
-    let counter = 0;
-    if (rules.counter && target.hp - dmg > 0 && canCounter(b, target, unit)) {
+    const hit = hitChance(b, unit, target, rules);
+    let counter = 0, counterHit = 0;
+    if (rules.counter && canCounter(b, target, unit)) {
         counter = calcDamage(b, target, unit, target.atkType, 100, rules, Math.random, true);
+        counterHit = hitChance(b, target, unit, rules);
     }
-    return { damage: dmg, counter };
+    return { damage: dmg, hit, counter, counterHit };
+}
+
+function strike(b, attacker, defender, kind, power, chance, rules, rng) {
+    if (!rollHit(chance, rng)) return { hit: false, hitRate: chance, damage: 0, hpBefore: defender.hp, hpAfter: defender.hp, killed: false };
+    const damage = calcDamage(b, attacker, defender, kind, power, rules, rng);
+    return { hit: true, hitRate: chance, damage, ...applyDamage(defender, damage) };
 }
 
 export function doAttack(b, unit, target, rules, rng = Math.random) {
@@ -347,17 +382,15 @@ export function doAttack(b, unit, target, rules, rng = Math.random) {
     }
     const forced = taunters(b, unit);
     if (forced.length && !forced.includes(target)) throw new Error(`被嘲讽，只能攻击${forced.map(t => t.name).join('、')}`);
-    const dmg = calcDamage(b, unit, target, unit.atkType, 100, rules, rng);
-    const hit = applyDamage(target, dmg);
     const ev = {
         type: 'attack', turn: b.turn, actor: ref(unit), target: ref(target),
-        atkType: unit.atkType, damage: dmg, ...hit,
+        atkType: unit.atkType,
+        ...strike(b, unit, target, unit.atkType, 100, hitChance(b, unit, target, rules), rules, rng),
         terrain: terrainAt(b, target.x, target.y).name,
         counter: null,
     };
     if (rules.counter && canCounter(b, target, unit)) {
-        const cdmg = calcDamage(b, target, unit, target.atkType, 100, rules, rng);
-        ev.counter = { atkType: target.atkType, damage: cdmg, ...applyDamage(unit, cdmg) };
+        ev.counter = { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) };
     }
     unit.acted = true; unit.moved = true;
     return ev;
@@ -428,6 +461,11 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random) {
     if (!affected.length) throw new Error('该位置没有可作用的目标');
     const results = affected.map(t => {
         const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
+        const chance = skillHitChance(b, unit, skill, t, rules);
+        if (!rollHit(chance, rng)) {
+            Object.assign(r, { missed: true, hitRate: chance, hpAfter: t.hp });
+            return r;
+        }
         if (skill.kind !== 'support') {
             r.damage = calcDamage(b, unit, t, skill.kind, skill.power, rules, rng);
             r.killed = applyDamage(t, r.damage).killed;
@@ -574,9 +612,12 @@ function bestActionAt(b, unit, x, y, rules, filter, mode) {
     if (mode === 'attack') {
         for (const t of attackTargets(b, unit).filter(filter)) {
             const dmg = calcDamage(b, unit, t, unit.atkType, 100, rules, Math.random, true);
-            let score = 1 + Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0);
-            if (rules.counter && dmg < t.hp && canCounter(b, t, unit)) {
-                score -= calcDamage(b, t, unit, t.atkType, 100, rules, Math.random, true) * 0.3;
+            const hit = hitChance(b, unit, t, rules) / 100;
+            if (!hit) continue; // 不会去打完全打不中的目标
+            let score = 1 + (Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0)) * hit;
+            if (rules.counter && canCounter(b, t, unit)) {
+                const survive = dmg >= t.hp ? 1 - hit : 1;
+                score -= calcDamage(b, t, unit, t.atkType, 100, rules, Math.random, true) * (hitChance(b, t, unit, rules) / 100) * survive * 0.3;
             }
             consider({ kind: 'attack', x, y, target: t, score: Math.max(0.5, score) });
         }
@@ -587,13 +628,17 @@ function bestActionAt(b, unit, x, y, rules, filter, mode) {
             const aff = skillAffected(b, unit, sk, tx, ty);
             let score = 0;
             if (mode === 'support') {
-                for (const t of aff) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules);
+                for (const t of aff) {
+                    const hit = skillHitChance(b, unit, sk, t, rules) / 100;
+                    for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * hit;
+                }
             } else {
-                if (!aff.some(filter)) continue;
+                if (!aff.some(t => filter(t) && skillHitChance(b, unit, sk, t, rules) > 0)) continue;
                 for (const t of aff) {
                     const dmg = calcDamage(b, unit, t, sk.kind, sk.power, rules, Math.random, true);
-                    score += 1 + Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0);
-                    if (dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5;
+                    const hit = skillHitChance(b, unit, sk, t, rules) / 100;
+                    score += 1 + (Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0)) * hit;
+                    if (dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5 * hit;
                 }
             }
             // 有次数限制或冷却的技能，略微倾向于保留
@@ -846,6 +891,7 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         atk: object ? 0 : +d.atk || 0,
         matk: object ? 0 : +d.matk || 0,
         def: +d.def || 0, mdef: +d.mdef || 0,
+        agi: object ? 0 : +d.agi || 0,
         mov: object ? 0 : +d.mov || 0,
         rangeMin: object ? 0 : Math.max(1, +d.rangeMin || 1),
         rangeMax: object ? 0 : Math.max(+d.rangeMin || 1, +d.rangeMax || 1),

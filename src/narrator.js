@@ -46,16 +46,22 @@ export function formatEvent(e) {
         case 'wait':
             return `${who(e.actor)} 在${e.terrain}原地待命。`;
         case 'attack': {
-            let s = `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，造成 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`;
+            // hit 为 false 表示未命中（旧版事件没有该字段，视为命中）
+            let s = e.hit === false
+                ? `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，但被 ${e.target.name} 闪避了（未命中）`
+                : `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，造成 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`;
             if (e.killed) s += `，${e.target.name} 被击败`;
             if (e.counter) {
-                s += `；${e.target.name} 反击，造成 ${e.counter.damage} 点${KIND[e.counter.atkType]}伤害（${e.actor.name} ${hpChange(e.counter)}）`;
+                s += e.counter.hit === false
+                    ? `；${e.target.name} 反击，但被 ${e.actor.name} 躲开了（未命中）`
+                    : `；${e.target.name} 反击，造成 ${e.counter.damage} 点${KIND[e.counter.atkType]}伤害（${e.actor.name} ${hpChange(e.counter)}）`;
                 if (e.counter.killed) s += `，${e.actor.name} 被击败`;
             }
             return s + '。';
         }
         case 'skill': {
             const parts = e.results.map(r => {
+                if (r.missed) return `${who(r.target)} 闪避了（未命中）`;
                 const bits = [];
                 if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
@@ -219,6 +225,8 @@ export function skillSummary(sk) {
     if (side !== 'self') parts.push(`射程${sk.rangeMin}-${sk.rangeMax}`);
     if (side !== 'self' && Number(sk.radius)) parts.push(`范围${sk.radius}`);
     if (Number(sk.cooldown) > 1) parts.push(`冷却${sk.cooldown}回合`);
+    if (side === 'enemy' && sk.sureHit) parts.push('必中');
+    else if (side === 'enemy' && Number(sk.hitMod)) parts.push(`命中${sk.hitMod > 0 ? '+' : ''}${sk.hitMod}%`);
     if (sk.uses) parts.push(`剩余${sk.usesLeft ?? sk.uses}/${sk.uses}次`);
     const fx = (sk.effects || []).map(e => {
         const label = effectLabel(e);

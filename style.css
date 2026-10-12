@@ -81,7 +81,8 @@
 .tsrpg-hint { font-size: 0.75em; color: var(--tsrpg-muted); }
 .tsrpg-check { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; cursor: pointer; }
 .tsrpg-checks { display: flex; flex-wrap: wrap; }
-.tsrpg-grid2, .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5, .tsrpg-grid6 { display: grid; gap: 4px 10px; }
+.tsrpg-grid2, .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5, .tsrpg-grid6, .tsrpg-grid7 { display: grid; gap: 4px 10px; }
+.tsrpg-grid7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .tsrpg-grid5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .tsrpg-grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .tsrpg-grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -176,7 +177,7 @@
 .tsrpg-hp { position: relative; height: 16px; background: rgba(0, 0, 0, 0.4); border-radius: 4px; overflow: hidden; }
 .tsrpg-hp > div { height: 100%; background: linear-gradient(90deg, #43a047, #9ccc65); }
 .tsrpg-hp > span { position: absolute; inset: 0; text-align: center; font-size: 11px; line-height: 16px; color: #fff; text-shadow: 0 0 2px #000; }
-.tsrpg-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; text-align: center; }
+.tsrpg-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; text-align: center; }
 .tsrpg-stats > div { display: flex; flex-direction: column; background: rgba(255, 255, 255, 0.05); border-radius: 4px; padding: 1px 0; }
 .tsrpg-stats small { font-size: 0.7em; color: var(--tsrpg-muted); }
 .tsrpg-actions { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -223,7 +224,7 @@
     .tsrpg-battle, .tsrpg-editor { flex-direction: column; }
     .tsrpg-side, .tsrpg-list { flex: none; width: 100%; position: static; }
     .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .tsrpg-grid6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .tsrpg-grid6, .tsrpg-grid7 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .tsrpg-tab span { display: none; }
     .tsrpg-effect { grid-template-columns: 1fr 1fr; }
     .tsrpg-effect-help { display: none; }
