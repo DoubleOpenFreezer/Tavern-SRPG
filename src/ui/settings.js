@@ -126,12 +126,10 @@ export function renderSettingsTab(app, root) {
 
         h('div.tsrpg-section-title', '界面'),
         h('div.tsrpg-grid4',
-            field('面板位置', select([['dock', '停靠在右侧'], ['float', '自由浮动窗口']], s.ui.layout, v => app.setLayout(v))),
-            field('停靠宽度（像素）', numInput(s.ui.dockWidth, on(s.ui, 'dockWidth', () => app.applyLayout()), { min: 320, max: 1600, step: 20 }), '也可以直接拖动面板左边缘'),
+            field('面板位置', select([['float', '完整窗口'], ['compact', '战斗小窗（地图和操作）']], s.ui.layout, v => app.setLayout(v))),
             field('格子大小上限（像素）', numInput(s.ui.cell, on(s.ui, 'cell', () => app.render()), { min: 18, max: 80 }), '面板较窄时会自动缩小'),
             h('div', checkbox('显示悬浮按钮', s.ui.fab, on(s.ui, 'fab', () => app.placeFab())), h('small.tsrpg-muted', '可拖动；关闭后从魔杖菜单或 /srpg 打开')),
         ),
-        checkbox('停靠时让聊天区域让出位置（聊天正文在左侧剩余空间居中）', s.ui.squeeze, on(s.ui, 'squeeze', () => app.updateSqueeze())),
 
         h('div.tsrpg-section-title', '导入 / 导出'),
         h('div.tsrpg-muted', '这里导出 / 导入的是全部资料卡和全局设置。单张资料卡请在「资料卡」页导出。'),

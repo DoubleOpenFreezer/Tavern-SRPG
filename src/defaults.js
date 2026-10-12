@@ -264,10 +264,8 @@ export function defaultSettings() {
             intent: true, // 让 LLM 附带一句意图，写进战斗描写
         },
         ui: {
-            layout: 'dock', // dock: 停靠在右侧 ; float: 自由浮动
-            dockWidth: 440,
+            layout: 'float', // float: 完整窗口 ; compact: 战斗小窗
             fab: true, // 显示悬浮按钮
-            squeeze: true, // 停靠时让聊天区域让出位置
             fabPos: { right: 20, bottom: 140 },
             cell: 40, // 格子大小上限（会根据面板宽度自动缩小）
             left: null, top: null, width: null, height: null, tab: 'battle',

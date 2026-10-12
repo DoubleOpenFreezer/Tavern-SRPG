@@ -10,7 +10,7 @@ const KINDS = [['physical', '物理伤害（ATK vs DEF）'], ['magical', '魔法
 const TARGETS = [['ally', '友方（含自己）'], ['enemy', '敌方'], ['self', '仅自己']];
 
 export function newEditorUi() {
-    return { unitId: null, terrainId: null, mapId: null, tool: 'paint', brush: 'plain', placeUnit: null, wbBook: null };
+    return { unitId: null, skillUnitId: null, skillId: null, terrainId: null, mapId: null, tool: 'paint', brush: 'plain', placeUnit: null, wbBook: null };
 }
 
 /** 编辑器顶部：提示正在编辑哪张资料卡 */
@@ -110,12 +110,34 @@ function unitForm(app, u) {
         ],
         h('div.tsrpg-section-title', '世界书绑定'),
         wbBinder(app, u),
-        u.kind === 'object' ? null : [
-            h('div.tsrpg-section-title', '技能', h('div.tsrpg-spacer'),
-                button('添加技能', () => { u.skills.push(makeSkill()); app.save(); app.render(); }, { icon: 'fa-plus' })),
-            u.skills.length ? u.skills.map(sk => skillForm(app, u, sk)) : h('div.tsrpg-muted', '没有技能。'),
-        ],
+        u.kind === 'object' ? null : skillEditor(app, u),
         field('备注', textArea(u.notes, set('notes'), 2, '仅自己可见的备注')),
+    );
+}
+
+/** 先选择技能，再编辑；切换单位或删除技能时修正当前选择。 */
+function skillEditor(app, u) {
+    const ed = app.ed;
+    if (ed.skillUnitId !== u.id || !u.skills.some(sk => sk.id === ed.skillId)) {
+        ed.skillUnitId = u.id;
+        ed.skillId = u.skills[0]?.id || null;
+    }
+    const selected = u.skills.find(sk => sk.id === ed.skillId);
+    return h('div.tsrpg-skill-editor',
+        h('div.tsrpg-section-title', '技能'),
+        h('div.tsrpg-row.tsrpg-skill-picker',
+            u.skills.length ? field('选择已有技能', select(
+                u.skills.map(sk => [sk.id, sk.name || '未命名技能']), ed.skillId,
+                id => { ed.skillId = id; app.render(); },
+            )) : null,
+            button('创建新技能', () => {
+                const sk = makeSkill();
+                u.skills.push(sk);
+                ed.skillId = sk.id;
+                app.save(); app.render();
+            }, { icon: 'fa-plus' }),
+        ),
+        selected ? skillForm(app, u, selected) : h('div.tsrpg-muted', '还没有技能，点击「创建新技能」开始编辑。'),
     );
 }
 
@@ -156,7 +178,7 @@ function skillForm(app, u, sk) {
     const self = support && sk.target === 'self';
     return h('div.tsrpg-skill',
         h('div.tsrpg-grid3',
-            field('技能名', textInput(sk.name, set('name'))),
+            field('技能名', textInput(sk.name, set('name', true))),
             field('类型', select(KINDS, sk.kind, v => {
                 sk.kind = v;
                 sk.target = v === 'support' ? 'ally' : 'enemy';

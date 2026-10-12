@@ -48,6 +48,17 @@ function renderSetup(app, root) {
     const marks = new Map();
     for (const w of map.reinforcements || []) marks.set(`${w.x},${w.y}`, ['m-spawn']);
 
+    if (s.ui.layout === 'compact') {
+        add(root,
+            h('div.tsrpg-row',
+                select(app.data.maps.map(m => [m.id, m.name]), map.id, v => { ui.setupMap = v; app.render(); }),
+                button('开始战斗', () => startBattle(app, map), { icon: 'fa-flag', cls: 'primary', disabled: problems.length > 0 })),
+            problems.map(p => h('div.tsrpg-warn', p)),
+            h('div.tsrpg-board-wrap', renderBoard({ w: map.w, h: map.h, tiles: map.tiles, terrain: terr, units, marks, cell: app.cellFor(map.w) })),
+        );
+        return;
+    }
+
     add(root,
         h('div.tsrpg-row.tsrpg-muted', h('i.fa-solid.fa-address-card'), ` 资料卡：${app.data.name}`,
             h('a.tsrpg-link', { onclick: () => app.setTab('profiles') }, '切换 / 绑定')),
@@ -353,7 +364,7 @@ function actionPanel(app, b, u) {
 }
 
 /** 战斗中允许修改世界书绑定：把单位定义里的绑定同步到战场单位 */
-function syncBindings(s, b) {
+function syncBindings(app, b) {
     const defs = new Map(app.data.units.map(u => [u.id, u]));
     let changed = false;
     for (const u of b.units) {
@@ -371,7 +382,7 @@ function syncBindings(s, b) {
 function renderActive(app, root, b) {
     const s = app.settings;
     const ui = app.bs;
-    if (syncBindings(s, b)) app.updateInjection();
+    if (syncBindings(app, b)) app.updateInjection();
     const u = selUnit(b, ui);
     if (u && u.hp <= 0) { ui.sel = null; ui.mode = 'idle'; }
 
@@ -393,6 +404,25 @@ function renderActive(app, root, b) {
         onHover: (x, y) => onHover(app, b, x, y, refs),
         onContext: () => { ui.sel = null; ui.mode = 'idle'; app.render(); },
     });
+
+    if (s.ui.layout === 'compact') {
+        add(root,
+            h('div.tsrpg-row.tsrpg-topbar', h('b', `第 ${b.turn} 回合`), status,
+                button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length }),
+                button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy })),
+            h('div.tsrpg-board-wrap', refs.board),
+            ui.busy ? h('div.tsrpg-busy', ui.busy) : null,
+            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.acted ? ' · 已行动' : ''}`) : null,
+            actionPanel(app, b, u),
+            refs.preview,
+            h('div.tsrpg-row',
+                button('发送行动', () => dispatch(app, b), { icon: 'fa-paper-plane', disabled: !!ui.busy || (!b.pending.length && !ui.note.trim()) }),
+                b.llm?.proposals ? button('处理剧情提议', () => { app.setLayout('float'); app.setTab('battle'); }, { icon: 'fa-scroll' }) : null,
+                button('取消选择', () => { ui.sel = null; ui.mode = 'idle'; app.render(); }, { disabled: !ui.sel }),
+                button('结束战斗', () => endBattle(app), { icon: 'fa-flag-checkered', disabled: !!ui.busy })),
+        );
+        return;
+    }
 
     const pending = b.pending.filter(e => e.type !== 'phase' || b.pending.length > 1);
     const pendingList = h('div.tsrpg-events', pending.length

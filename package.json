@@ -5,6 +5,6 @@
   "type": "module",
   "description": "SillyTavern 战棋（SRPG）扩展",
   "scripts": {
-    "test": "node --test tests/engine.test.mjs tests/narrator.test.mjs tests/mission.test.mjs tests/effects.test.mjs tests/hit.test.mjs tests/context.test.mjs tests/llm.test.mjs tests/profiles.test.mjs"
+    "test": "node --test tests/*.test.mjs"
   }
 }
