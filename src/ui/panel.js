@@ -4,7 +4,7 @@ import { renderBattleTab, newBattleUi } from './battle.js';
 import { renderUnitsTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
 import { renderSettingsTab } from './settings.js';
 import { renderProfilesTab } from './profiles-tab.js';
-import { getProfile, profileFor, addProfiles, PROFILE_FORMAT } from '../profiles.js';
+import { getProfile } from '../profiles.js';
 import { toast } from './dom.js';
 import { buildBattleContext } from '../context.js';
 import { commandGuide } from '../commands.js';
@@ -64,41 +64,28 @@ export class App {
         return true;
     }
 
-    /** 打开聊天时：切换到该角色 / 群组绑定的资料卡；角色卡里带有资料卡时询问是否导入 */
+    /** 当前角色 / 群组必须显式绑定；不从默认卡或角色卡内附带数据自动启用。 */
     async syncProfileWithChat() {
         const owner = ST.currentOwner();
-        if (!owner) return;
         const s = this.settings;
-        await this.offerEmbeddedProfile(owner);
-        const target = profileFor(s, owner.key);
-        if (target && target.id !== s.activeProfile) {
+        const target = ST.boundProfile(s, owner);
+        const stamp = target ? `${owner.key}:${target.id}` : '';
+        if (stamp !== this.lastBindingKey) {
+            this.bs.cancelReaction?.();
+            this.bs = newBattleUi();
+            this.wbCache = {}; ++this.injectSeq; ST.setInjection('');
+            this.lastBindingKey = stamp;
+        }
+        if (!target) {
+            this._open = false;
+            if (this.panel) this.panel.hidden = true;
+            this.wbCache = {};
+        } else if (target.id !== s.activeProfile) {
             this.switchProfile(target.id, { quiet: true });
-            toast('info', `${owner.name} 使用资料卡「${target.name}」`);
         }
-    }
-
-    async offerEmbeddedProfile(owner) {
-        if (owner.kind !== 'char') return;
-        const s = this.settings;
-        const embedded = ST.readCardExtension(owner.character);
-        if (embedded?.format !== PROFILE_FORMAT || !embedded.profile) return;
-        const p = embedded.profile;
-        if (s.bindings[owner.key]) return; // 已经绑定过（可能就是自己写进去的）
-        if (getProfile(s, p.id)) { s.bindings[owner.key] = p.id; this.save(); return; }
-        const stamp = `${p.id}@${p.updatedAt || 0}`;
-        if (s.declinedEmbeds[owner.key] === stamp) return;
-        const ok = await ST.confirmPopup(
-            `<h3>角色卡附带了 SRPG 资料卡</h3><p>「${owner.name}」带有资料卡「${p.name}」（${(p.units || []).length} 个单位、${(p.maps || []).length} 张地图）。</p><p>导入并绑定到这个角色吗？</p>`,
-            `「${owner.name}」带有 SRPG 资料卡「${p.name}」，导入并绑定到这个角色吗？`);
-        if (!ok) {
-            s.declinedEmbeds[owner.key] = stamp;
-            this.save();
-            return;
-        }
-        const [added] = addProfiles(s, [p], { normalize: ST.normalizeProfile });
-        s.bindings[owner.key] = added.id;
-        this.save();
-        toast('success', `已导入资料卡「${added.name}」并绑定到 ${owner.name}`);
+        this.placeFab();
+        this.refreshMessageFolding?.();
+        await this.updateInjection();
     }
 
     get isOpen() {
@@ -255,7 +242,7 @@ export class App {
             bottom: `${Math.max(4, Math.min(window.innerHeight - 52, pos.bottom))}px`,
         });
         // 窗口打开时隐藏悬浮按钮，避免遮挡地图和操作。
-        const hide = ui.fab === false || this.isOpen;
+        const hide = ui.fab === false || this.isOpen || !ST.isEnabledForChat();
         this.fab.hidden = hide;
         this.fab.classList.toggle('open', this.isOpen);
         this.updateSqueeze();
@@ -293,6 +280,11 @@ export class App {
     toggle(force) {
         if (!this.panel) return;
         const open = force ?? !this._open;
+        if (open && !ST.isEnabledForChat()) {
+            this.settings.ui.layout = 'float'; this.settings.ui.tab = 'profiles';
+            this.save(); this.applyLayout();
+        }
+        if (!open) this.bs.cancelReaction?.();
         this._open = open;
         this.panel.hidden = !open;
         this.placeFab();
@@ -317,6 +309,10 @@ export class App {
                 h(`i.fa-solid.${icon}`), h('span', label))));
         const scroll = this.body.scrollTop;
         const renderer = s.ui.layout === 'compact' ? renderBattleTab : TABS.find(t => t[0] === s.ui.tab)[3];
+        const bound = ST.boundProfile(s);
+        if (renderer === renderBattleTab && bound && s.activeProfile !== bound.id) {
+            s.activeProfile = bound.id; this.ed = newEditorUi(); this.bs.setupMap = null; this.save();
+        }
         try {
             renderer(this, this.body);
         } catch (err) {
@@ -328,13 +324,16 @@ export class App {
     }
 
     async onChatChanged() {
+        this.bs.cancelReaction?.();
+        this.wbCache = {}; ++this.injectSeq; ST.setInjection('');
+        this.endBattleDialog?.remove(); this.endBattleDialog = null;
+        this.panel?.querySelectorAll('.tsrpg-overlay').forEach(el => el.remove());
         this.bs = newBattleUi();
         try {
             await this.syncProfileWithChat();
         } catch (err) {
             console.warn('[Tavern-SRPG] 同步资料卡失败', err);
         }
-        this.updateInjection();
         this.render();
     }
 
@@ -373,6 +372,7 @@ export class App {
                 if (text) wb[u.uid] = text;
             }
             if (seq !== this.injectSeq) return; // 已有更新的调用
+            if (ST.getBattle() !== b) { this.wbCache = {}; ST.setInjection(''); return; }
             this.wbCache = wb;
         }
         ST.setInjection(s.inject.enabled ? this.battleContext() : '', s.inject);

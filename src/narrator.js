@@ -79,6 +79,13 @@ function formatEventBody(e) {
         case 'wait':
             return `${who(e.actor)} 在${e.terrain}原地待命。`;
         case 'attack': {
+            let lead = '';
+            if (e.reaction === 'defend') lead = `${who(e.target)}选择防御，放弃反击并减轻伤害。`;
+            if (e.firstStrike) {
+                const f = e.firstStrike;
+                lead = `${who(e.actor)} 使用后手武器，${who(e.target)}先攻${f.hit === false ? '但未命中' : `造成 ${f.damage} 点伤害（${e.actor.name} ${hpChange(f)}）`}。`;
+                if (e.cancelled) return `${lead}${e.actor.name}被击败，未能发动攻击。`;
+            }
             // hit 为 false 表示未命中（旧版事件没有该字段，视为命中）
             let s = e.hit === false
                 ? `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，但被 ${e.target.name} 闪避了（未命中）`
@@ -90,12 +97,14 @@ function formatEventBody(e) {
                     : `；${e.target.name} 反击，造成 ${e.counter.damage} 点${KIND[e.counter.atkType]}伤害（${e.actor.name} ${hpChange(e.counter)}）`;
                 if (e.counter.killed) s += `，${e.actor.name} 被击败`;
             }
-            return s + '。';
+            return lead + s + '。';
         }
         case 'skill': {
             const parts = e.results.map(r => {
-                if (r.missed) return `${who(r.target)} 闪避了（未命中）`;
+                const counter = r.counter ? r.counter.hit === false ? '；反击未命中' : `；反击造成 ${r.counter.damage} 点伤害（${e.actor.name} ${hpChange(r.counter)}）${r.counter.killed ? '，施法者被击败' : ''}` : '';
+                if (r.missed) return `${who(r.target)} 闪避了（未命中）${counter}`;
                 const bits = [];
+                if (r.reaction === 'defend') bits.push('选择防御');
                 if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
                 for (const ef of r.effects || []) {
@@ -104,10 +113,11 @@ function formatEventBody(e) {
                     else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
                 }
                 const hp = r.hpBefore !== r.hpAfter ? `（${hpChange(r)}）` : '';
-                return `${who(r.target)} ${bits.join('，') || '不受影响'}${hp}${r.killed ? '，被击败' : ''}`;
+                return `${who(r.target)} ${bits.join('，') || '不受影响'}${hp}${r.killed ? '，被击败' : ''}${counter}`;
             });
             const desc = e.skill.desc ? `（${e.skill.desc}）` : '';
-            return `${who(e.actor)} 释放${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}：${parts.join('；')}。`;
+            const mode = e.skill.attackMode === 'mapLine' ? 'MAP直线' : e.skill.attackMode === 'mapArea' ? 'MAP范围' : '';
+            return `${who(e.actor)} 释放${mode}${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}：${parts.join('；') || '范围内没有目标'}。`;
         }
         case 'dot':
             return e.effect === 'poison'
@@ -213,8 +223,8 @@ const TARGET_NAMES = { ally: '友方', enemy: '敌方', self: '自身' };
 export function skillSummary(sk) {
     const side = sk.kind === 'support' ? (sk.target || 'ally') : 'enemy';
     const parts = [sk.kind === 'support' ? `辅助·${TARGET_NAMES[side]}` : `${KIND[sk.kind]} ${sk.power}%`];
-    if (side !== 'self') parts.push(`射程${sk.rangeMin}-${sk.rangeMax}`);
-    if (side !== 'self' && Number(sk.radius)) parts.push(`范围${sk.radius}`);
+    if (side !== 'self' && sk.attackMode !== 'mapLine') parts.push(`射程${sk.rangeMin}-${sk.rangeMax}`);
+    if (side !== 'self' && Number(sk.radius) && !['mapLine', 'mapArea'].includes(sk.attackMode)) parts.push(`范围${sk.radius}`);
     if (Number(sk.cooldown) > 1) parts.push(`冷却${sk.cooldown}回合`);
     if (side === 'enemy' && sk.sureHit) parts.push('必中');
     else if (side === 'enemy' && Number(sk.hitMod)) parts.push(`命中${sk.hitMod > 0 ? '+' : ''}${sk.hitMod}%`);
@@ -223,5 +233,7 @@ export function skillSummary(sk) {
         const label = effectLabel(e);
         return e.type === 'heal' ? `恢复HP（MATK×${e.value}%）` : e.type === 'heal_pct' ? `恢复HP（最大HP×${e.value}%）` : e.turns && !['cleanse'].includes(e.type) ? `${label}（${e.turns}回合）` : label;
     });
+    const map = sk.attackMode === 'mapLine' ? `MAP直线${sk.lineLength || 3}格，不反击` : sk.attackMode === 'mapArea' ? `MAP范围半径${Math.max(1, sk.radius || 1)}格，不反击` : '';
+    if (map) parts.push(map, sk.mapTargets === 'enemy' ? '仅敌方' : '敌我全部（不伤害自己）');
     return parts.join(' ') + (fx.length ? `｜${fx.join('、')}` : '');
 }

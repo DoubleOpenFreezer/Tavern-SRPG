@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultSettings, META_KEY } from '../src/defaults.js';
+import { defaultSettings, META_KEY, makeUnit, makeMap } from '../src/defaults.js';
 import { newBattleUi, renderBattleTab } from '../src/ui/battle.js';
+import { renderProfilesTab } from '../src/ui/profiles-tab.js';
 
 // Minimal DOM for exercising the real battle renderer and its event handlers.
 class TestNode {
@@ -11,9 +12,11 @@ class TestNode {
         this.children = [];
         this.style = {};
         this.dataset = {};
+        this.disabled = false;
+        this.checked = false;
         this.listeners = {};
         this.classes = new Set();
-        this.classList = { add: name => this.classes.add(name) };
+        this.classList = { add: name => this.classes.add(name), remove: name => this.classes.delete(name) };
     }
     get firstChild() { return this.children[0]; }
     get textContent() { return this.text + this.children.map(c => c.textContent).join(''); }
@@ -57,6 +60,12 @@ function setup(t) {
     setGlobal('window', { toastr: { success() {} } });
     setGlobal('SillyTavern', { getContext: () => context });
     const settings = defaultSettings();
+    settings.bindings['char:test.png'] = settings.profiles[0].id;
+    context.characterId = 0;
+    context.characters = [{ name: '测试角色', avatar: 'test.png' }];
+    context.extensionSettings = { tavern_srpg: settings };
+    settings.ui.animate = false; // 常规交互测试即时结算；回放另行验证。
+    settings.ui.confirmDefense = false; // 交互选择另行验证，常规测试自动响应。
     const root = new TestNode('div');
     let injections = 0;
     const app = {
@@ -186,6 +195,42 @@ test('战斗小窗只显示地图和操作，仍可行动、结束回合并恢�
 });
 
 for (const layout of ['float', 'compact']) {
+    test(`${layout}：移动与行动过程锁定操作，播放完成后恢复操作`, async t => {
+        const { app, root, context, click } = setup(t);
+        app.settings.ui.layout = layout;
+        app.settings.ui.animate = true;
+        const renderedFrames = [];
+        const render = app.render.bind(app);
+        app.render = () => {
+            render();
+            if (app.bs.playback) renderedFrames.push(app.bs.playback.label);
+        };
+        t.mock.method(globalThis, 'setTimeout', callback => { callback(); return 0; });
+        app.render();
+        click('开始战斗');
+        const b = context.chatMetadata[META_KEY];
+        const hero = b.units.find(u => u.side === 'player');
+        let board = find(root, n => n.classes.has('tsrpg-board'));
+        board.listeners.mousedown({ button: 0, target: { closest: () => board.children[hero.y * b.w + hero.x] } });
+        const oldX = hero.x;
+        board = find(root, n => n.classes.has('tsrpg-board'));
+        board.listeners.mousedown({ button: 0, target: { closest: () => board.children[hero.y * b.w + oldX + 1] } });
+        assert.ok(app.bs.busy);
+        assert.ok(find(root, n => n.tag === 'button' && n.textContent === '跳过过程'));
+        assert.ok(!find(root, n => n.classes.has('tsrpg-actions')));
+        const undo = find(root, n => n.tag === 'button' && n.textContent === '撤销');
+        assert.ok(undo.disabled);
+        for (let i = 0; i < 100 && app.bs.busy; i++) await Promise.resolve();
+        assert.equal(app.bs.busy, null);
+        assert.equal(app.bs.playback, null);
+        assert.equal(hero.x, oldX + 1);
+        await click('待机');
+        assert.ok(renderedFrames.some(label => label.includes('移动')));
+        assert.ok(renderedFrames.some(label => label.includes('待机')));
+        assert.equal(hero.acted, true);
+        assert.equal(app.bs.busy, null);
+    });
+
     test(`${layout}：仅结算回合跳过LLM指挥官和自动发送`, async t => {
         const { app, root, context, click } = setup(t);
         let llmCalls = 0;
@@ -257,4 +302,143 @@ test('玩家移动到致命熔岩后立即判负，不能继续选择攻击或�
     assert.equal(app.bs.sel, null);
     assert.ok(b.pending.some(e => e.type === 'result' && e.result === 'defeat'));
     assert.ok(!find(root, n => n.classes.has('tsrpg-actions')));
+});
+
+function setupExchange(t, range = 1) {
+    const env = setup(t);
+    const { app, click } = env;
+    app.data.units = [
+        makeUnit({ id: 'p', name: '勇者', hp: 100, atk: 20, def: 0, mov: 0 }),
+        makeUnit({ id: 'e', name: '兽人', side: 'enemy', hp: 100, atk: 20, def: 0, mov: 0, ai: 'stationary', rangeMin: range, rangeMax: range }),
+    ];
+    app.data.maps = [makeMap({ w: 4, h: 1, placements: [{ unitId: 'p', x: 0, y: 0 }, { unitId: 'e', x: range, y: 0 }] })];
+    Object.assign(app.data.rules, { hitEnabled: false, variance: 0, counter: true });
+    app.settings.send.autoOnEndTurn = false;
+    app.render(); click('开始战斗');
+    return env;
+}
+
+async function waitForReaction(app) {
+    for (let i = 0; i < 100 && !app.bs.cancelReaction; i++) await Promise.resolve();
+    assert.ok(app.bs.cancelReaction, '敌方攻击应暂停等待玩家');
+}
+
+test('选择攻击对象只显示预览，取消不结算，确认战斗后才扣血和反击', async t => {
+    const { app, root, context, click } = setupExchange(t);
+    const b = context.chatMetadata[META_KEY], [hero, foe] = b.units;
+    let board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[0] } });
+    click('原地行动');
+    board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[1] } });
+    assert.equal(hero.hp, 100); assert.equal(foe.hp, 100);
+    assert.ok(root.textContent.includes('期望伤害'));
+    assert.ok(root.textContent.includes('存活后反击'));
+    click('取消');
+    assert.equal(hero.hp, 100); assert.equal(foe.hp, 100);
+    board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[1] } });
+    await click('战斗');
+    assert.equal(hero.hp, 80); assert.equal(foe.hp, 80);
+    assert.equal(app.bs.engagement, null);
+});
+
+test('战斗并生成描写只发送本次交战，先前待发送行动保留', async t => {
+    const { app, root, context, click } = setupExchange(t);
+    const sent = [];
+    const input = { value: '', dispatchEvent() {} };
+    document.getElementById = id => id === 'send_textarea' ? input : id === 'send_but' ? { click: () => sent.push(input.value) } : null;
+    const b = context.chatMetadata[META_KEY];
+    const oldPending = [...b.pending];
+    let board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[0] } });
+    click('原地行动');
+    board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[1] } });
+    await click('战斗并生成描写');
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /勇者.*兽人.*20 点伤害.*反击/);
+    assert.ok(!sent[0].includes('任务：'));
+    assert.deepEqual(b.pending, oldPending);
+    assert.equal(b.log.length, 1);
+});
+
+for (const response of ['反击', '防御']) {
+    test(`敌方普通攻击暂停，玩家选择${response}后继续结算`, async t => {
+        const { app, context, click } = setupExchange(t);
+        app.settings.ui.confirmDefense = true;
+        const b = context.chatMetadata[META_KEY], [hero, foe] = b.units;
+        hero.acted = true;
+        const run = click('仅结算回合');
+        await waitForReaction(app);
+        assert.equal(hero.hp, 100); assert.equal(foe.hp, 100);
+        assert.ok(app.panel.classes.has('tsrpg-reaction-open'));
+        assert.ok(find(app.panel, n => n.tag === 'button' && n.textContent === '反击'));
+        find(app.panel, n => n.tag === 'button' && n.textContent === response).listeners.click();
+        await run;
+        assert.equal(hero.hp, response === '防御' ? 90 : 80);
+        assert.equal(foe.hp, response === '防御' ? 100 : 80);
+        assert.equal(b.turn, 2);
+        assert.equal(app.bs.busy, null);
+        assert.equal(app.bs.cancelReaction, null);
+        assert.equal(app.panel.children.length, 0);
+        assert.ok(!app.panel.classes.has('tsrpg-reaction-open'));
+    });
+}
+
+test('射程不够时只有防御；取消回合恢复原有战场，不留下等待状态', async t => {
+    const { app, context, click } = setupExchange(t, 2);
+    app.settings.ui.confirmDefense = true;
+    const b = context.chatMetadata[META_KEY];
+    b.units[0].acted = true;
+    const before = structuredClone(b);
+    const run = click('仅结算回合');
+    await waitForReaction(app);
+    assert.ok(!find(app.panel, n => n.tag === 'button' && n.textContent === '反击'));
+    find(app.panel, n => n.tag === 'button' && n.textContent === '取消本次回合').listeners.click();
+    await run;
+    const restored = context.chatMetadata[META_KEY];
+    assert.equal(restored.turn, before.turn);
+    assert.deepEqual(restored.units, before.units);
+    assert.equal(app.bs.busy, null);
+    assert.equal(app.bs.cancelReaction, null);
+});
+
+test('等待防御时切换聊天不能结算到新战场', async t => {
+    const { app, context, click } = setupExchange(t);
+    app.settings.ui.confirmDefense = true;
+    context.chatMetadata[META_KEY].units[0].acted = true;
+    const run = click('仅结算回合');
+    await waitForReaction(app);
+    app.bs.cancelReaction();
+    app.bs = newBattleUi();
+    const next = { active: true, units: [], turn: 99 };
+    context.chatId = 'next-chat'; context.chatMetadata = { [META_KEY]: next };
+    app.render = () => {};
+    await run;
+    assert.equal(context.chatMetadata[META_KEY], next);
+    assert.equal(next.turn, 99);
+    assert.equal(app.bs.busy, null);
+});
+
+test('资料卡多选绑定可同时关联多个角色，解除一个不会影响其他角色', async t => {
+    const { app, root, context } = setup(t);
+    context.characters.push({ name: '第二角色', avatar: 'second.png' });
+    let syncs = 0;
+    app.save = () => {};
+    app.syncProfileWithChat = async () => { syncs++; };
+    app.render = () => renderProfilesTab(app, root);
+    app.render();
+    const picker = () => find(root, n => n.classes.has('tsrpg-multi-bindings'));
+    const check = name => find(picker(), n => n.tag === 'label' && n.textContent.includes(name)).children[0];
+    assert.equal(check('测试角色').checked, true);
+    assert.equal(check('第二角色').checked, false);
+    await check('第二角色').listeners.change({ target: { checked: true } });
+    assert.equal(app.settings.bindings['char:test.png'], app.data.id);
+    assert.equal(app.settings.bindings['char:second.png'], app.data.id);
+    assert.equal(syncs, 0, '绑定另一个角色不切换当前编辑卡');
+    await check('测试角色').listeners.change({ target: { checked: false } });
+    assert.equal(app.settings.bindings['char:test.png'], undefined);
+    assert.equal(app.settings.bindings['char:second.png'], app.data.id);
+    assert.equal(syncs, 1);
 });

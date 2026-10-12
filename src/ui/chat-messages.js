@@ -1,4 +1,4 @@
-import { ctx } from '../st.js';
+import { ctx, isEnabledForChat } from '../st.js';
 
 /** Identify the battle report independently of the configurable prompt header. */
 export function battleMessageTitle(message) {
@@ -29,9 +29,16 @@ export function foldBattleMessage(textElement, message) {
     textElement.append(details);
 }
 
+export function unfoldBattleMessage(textElement) {
+    const details = textElement?.querySelector('.tsrpg-chat-report');
+    const content = details?.querySelector('.tsrpg-chat-report-content');
+    if (content) details.replaceWith(...Array.from(content.childNodes));
+}
+
 export function installBattleMessageFolding() {
     let observedChat = null, observer = null;
     const decorate = element => {
+        if (!isEnabledForChat()) return;
         const rawId = element.getAttribute('mesid');
         if (rawId == null || rawId === '') return;
         const id = Number(rawId);
@@ -41,6 +48,11 @@ export function installBattleMessageFolding() {
     const refresh = () => {
         const chat = document.getElementById('chat');
         if (!chat) return;
+        if (!isEnabledForChat()) {
+            observer?.disconnect(); observer = null; observedChat = null;
+            chat.querySelectorAll('.mes_text').forEach(unfoldBattleMessage);
+            return;
+        }
         if (chat !== observedChat) {
             observer?.disconnect();
             observedChat = chat;
@@ -67,4 +79,5 @@ export function installBattleMessageFolding() {
         if (eventTypes[key]) eventSource.on(eventTypes[key], refresh);
     }
     refresh();
+    return refresh;
 }

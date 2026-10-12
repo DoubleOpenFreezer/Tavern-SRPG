@@ -109,6 +109,7 @@ function unitBlock(b, u, labels, opts) {
     if (u.object) tags.push('建筑');
     if (u.keyTarget) tags.push(u.side === 'enemy' ? '★关键目标（摧毁它）' : '★关键目标（保护它）');
     if (u.flying) tags.push('飞行');
+    if (u.attackOrder === 'last') tags.push(`${u.weaponName || '重武器'}：普通攻击后手`);
     const lines = [`[${labels[u.uid]}] ${u.name}${aliases.length ? `（又名：${aliases.join('、')}）` : ''}｜${tags.join('｜')}｜位于 ${pos(u)} ${t.name}｜HP ${u.hp}/${u.maxHp}`];
 
     if (opts.stats) {

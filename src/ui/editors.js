@@ -103,6 +103,10 @@ function unitForm(app, u) {
                 field('攻击射程（最小）', numInput(u.rangeMin, set('rangeMin'), { min: 1 })),
                 field('攻击射程（最大）', numInput(u.rangeMax, set('rangeMax'), { min: 1 })),
             ),
+            h('div.tsrpg-grid2',
+                field('武器名称', textInput(u.weaponName || '', set('weaponName'), '例如：大剑、长枪')),
+                field('普通攻击顺序', select([['normal', '普通：主动攻击时先出手'], ['last', '后手：大剑 / 重武器']], u.attackOrder || 'normal', set('attackOrder')))),
+            h('small.tsrpg-muted', '后手角色主动普通攻击时，可回击且非后手的目标先攻击；若先被击败则无法出手。双方都是后手时仍由主动方先攻。目标无法回击、眩晕或是建筑时不抢先；MAP技能不触发这一规则。'),
             h('div.tsrpg-row',
                 checkbox('飞行单位', u.flying, set('flying'), '飞行单位无视地形移动消耗，可越过河流、峡谷等'),
             ),
@@ -176,22 +180,32 @@ function skillForm(app, u, sk) {
     const set = (k, rerender = false) => v => { sk[k] = v; app.save(); if (rerender) app.render(); };
     const support = sk.kind === 'support';
     const self = support && sk.target === 'self';
+    const map = ['mapLine', 'mapArea'].includes(sk.attackMode);
     return h('div.tsrpg-skill',
         h('div.tsrpg-grid3',
             field('技能名', textInput(sk.name, set('name', true))),
             field('类型', select(KINDS, sk.kind, v => {
                 sk.kind = v;
                 sk.target = v === 'support' ? 'ally' : 'enemy';
+                if (v === 'support') sk.attackMode = 'normal';
                 app.save(); app.render();
             })),
             support
                 ? field('作用对象', select(TARGETS, sk.target, set('target', true)))
                 : field('威力 %', numInput(sk.power, set('power'), { min: 0, step: 10 })),
         ),
+        support ? null : h('div.tsrpg-grid2',
+            field('攻击方式', select([['normal', '普通技能'], ['mapLine', 'MAP：直线路径攻击'], ['mapArea', 'MAP：指定地块范围攻击']], sk.attackMode, v => {
+                sk.attackMode = v;
+                if (v === 'mapArea') sk.radius = Math.max(1, Number(sk.radius) || 1);
+                app.save(); app.render();
+            })),
+            map ? field('MAP作用对象', select([['all', '敌我全部（不伤害自己）'], ['enemy', '仅敌方']], sk.mapTargets, set('mapTargets', true))) : null),
+        map ? h('small.tsrpg-muted', 'MAP不触发反击或后手交换；同时攻击所有覆盖目标。默认会误伤友军，可切换为仅敌方。') : null,
         h('div.tsrpg-grid5',
-            self ? null : field('射程最小', numInput(sk.rangeMin, set('rangeMin'), { min: 0 }), '0＝可以对自己所在格使用'),
-            self ? null : field('射程最大', numInput(sk.rangeMax, set('rangeMax'), { min: 0 })),
-            self ? null : field('范围半径', numInput(sk.radius, set('radius'), { min: 0 }), '0＝单体'),
+            self || sk.attackMode === 'mapLine' ? null : field('射程最小', numInput(sk.rangeMin, set('rangeMin'), { min: 0 }), '0＝可以对自己所在格使用'),
+            self || sk.attackMode === 'mapLine' ? null : field('射程最大', numInput(sk.rangeMax, set('rangeMax'), { min: 0 })),
+            sk.attackMode === 'mapLine' ? field('直线长度', numInput(sk.lineLength, set('lineLength'), { min: 1, max: 100 }), '从自己向上下左右延伸；点击方向上的任一格') : self ? null : field('范围半径', numInput(sk.radius, set('radius'), { min: sk.attackMode === 'mapArea' ? 1 : 0 }), '按格子距离计算菱形范围；普通技能0＝单体'),
             field('冷却回合', numInput(sk.cooldown, set('cooldown'), { min: 0 }), '每 N 回合可用一次；0 或 1＝每回合可用'),
             field('次数', numInput(sk.uses, set('uses'), { min: 0 }), '每场战斗；0＝无限'),
         ),

@@ -26,6 +26,7 @@ export async function handleMessage(app, mesId, type) {
     if (!b?.active) return;
     const msg = ST.getMessage(mesId);
     if (!msg || msg.is_user || msg.is_system) return;
+    const chatId = ST.currentChatId();
 
     // 同一条消息被重新生成 / 滑动：先撤回上一版回复造成的改动（续写不撤回）
     if (type !== 'continue') {
@@ -39,6 +40,7 @@ export async function handleMessage(app, mesId, type) {
         return;
     }
     if (s.llm.hideBlock) await ST.rewriteMessage(mesId, clean);
+    if (ST.getBattle() !== b || ST.currentChatId() !== chatId) return;
     const cmds = blocks.flatMap(parseCommands);
     if (!cmds.length) return;
 
@@ -56,6 +58,7 @@ export async function handleMessage(app, mesId, type) {
 
 /** 应用一组指令；记录应用前的快照，以便重新生成时撤回 */
 export function applyCommands(app, b, cmds, mesId) {
+    if (ST.getBattle() !== b) return;
     const snapshot = structuredClone(b);
     snapshot.llm = { proposals: null, applied: null };
     app.bs.undo.push(structuredClone(b));
@@ -160,40 +163,73 @@ async function askCommander(app, b, side, group) {
  * 敌方 / 友军阶段（异步版）：开启了 LLM 指挥的阵营先问 LLM，其余交给内置 AI。
  * 等待期间如果切换了聊天，就放弃本次结算。
  */
-export async function runAiPhases(app, b) {
+export async function runAiPhases(app, b, { quiet = false, chooseReaction, processEvents } = {}) {
     const s = app.settings;
     const chatId = ST.currentChatId();
     const events = [];
+    const check = () => {
+        if (ST.currentChatId() !== chatId || ST.getBattle() !== b) throw new Error('聊天已切换，本次敌方回合已停止。');
+    };
+    const process = async (before, batch) => {
+        if (batch.length && processEvents) await processEvents(before, batch);
+        check();
+        app.bs.busy = '回合结算中……';
+    };
     for (const side of E.AI_SIDES) {
         if (b.result) break;
+        check();
+        const phaseBefore = structuredClone(b);
         const { events: ev, group } = E.beginSidePhase(b, side);
         events.push(...ev);
+        await process(phaseBefore, ev);
         if (b.result) break;
         if (!group.length) continue;
         let picks = new Map(), options = new Map();
-        if (s.llm.commander[side]) {
+        if (!quiet && s.llm.commander[side]) {
             ({ picks, options } = await askCommander(app, b, side, group));
-            if (ST.currentChatId() !== chatId || ST.getBattle() !== b) throw new Error('聊天已切换，本次敌方回合没有结算。');
+            check();
         }
         for (const u of group) {
             if (b.result) break;
             if (u.hp <= 0 || u.retreated) continue;
+            check();
             const pick = picks.get(u.uid);
             const plan = pick && pick.index > 0 ? options.get(u.uid)?.[pick.index - 1] : null;
+            let processBefore = structuredClone(b), played = 0;
+            const choose = async request => {
+                const moves = request.eventsBefore.slice(played);
+                if (moves.length) {
+                    await process(processBefore, moves);
+                    played = request.eventsBefore.length;
+                    processBefore = structuredClone(b);
+                }
+                check();
+                const response = chooseReaction ? await chooseReaction(request) : E.defaultReaction(b, request.attacker, request.target, app.data.rules, request.skill);
+                check();
+                if (!['counter', 'defend', 'none'].includes(response)) throw new Error('已取消本次回合结算。');
+                return response;
+            };
             let evs;
             if (plan) {
-                const res = E.actWithPlan(b, u, plan, app.data.rules);
+                const res = await E.actWithPlanInteractive(b, u, plan, app.data.rules, choose);
                 evs = res.events;
                 if (res.usedPlan && pick.intent && s.llm.intent) {
                     const main = [...evs].reverse().find(e => ['attack', 'skill', 'wait', 'move'].includes(e.type));
                     if (main) main.intent = pick.intent;
                 }
             } else {
-                evs = E.aiAct(b, u, app.data.rules);
+                evs = await E.aiActInteractive(b, u, app.data.rules, choose);
             }
+            check();
             events.push(...evs);
+            await process(processBefore, evs.slice(played));
         }
     }
-    if (!b.result) events.push(...E.finishRound(b));
+    if (!b.result) {
+        const before = structuredClone(b);
+        const round = E.finishRound(b);
+        events.push(...round);
+        await process(before, round);
+    }
     return events;
 }

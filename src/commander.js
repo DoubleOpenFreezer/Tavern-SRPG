@@ -1,6 +1,7 @@
 // LLM 指挥官：把 AI 单位的可选行动列给 LLM，由 LLM 选择。纯逻辑部分（描述、提示词、解析回复）。
-import { SIDE_NAMES, aiOptions, calcDamage, hitChance, skillHitChance, skillAffected, terrainAt, getUnit } from './engine.js';
+import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit } from './engine.js';
 import { unitLabels } from './context.js';
+import { exchangePreview } from './exchange.js';
 
 const pos = (x, y) => `(${x + 1},${y + 1})`;
 
@@ -15,8 +16,9 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
         switch (plan.kind) {
             case 'attack': {
                 const t = getUnit(b, plan.target.uid);
-                const dmg = calcDamage(b, unit, t, unit.atkType, 100, rules, Math.random, true);
-                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}）`;
+                const preview = exchangePreview(b, unit, t, rules);
+                const dmg = preview.damage;
+                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}${preview.firstStrike ? `；目标先攻，若受到约${preview.counter}点伤害后存活才出手` : ''}）`;
             }
             case 'skill': {
                 const sk = plan.skill;
@@ -25,10 +27,10 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
                     const bits = [];
                     const hit = skillHitChance(b, unit, sk, t, rules);
                     if (hit < 100) bits.push(`命中${hit}%`);
-                    if (sk.kind !== 'support') bits.push(`伤害约${calcDamage(b, unit, t, sk.kind, sk.power, rules, Math.random, true)}`);
+                    if (sk.kind !== 'support') bits.push(`伤害约${exchangePreview(b, unit, t, rules, sk).damage}`);
                     return `${name(t)}${bits.length ? `（${bits.join('，')}）` : ''}`;
                 });
-                return `${go}使用【${sk.name}】作用于 ${who.join('、')}`;
+                return `${go}使用【${sk.name}】${sk.attackMode === 'mapLine' ? 'MAP直线，不反击；' : sk.attackMode === 'mapArea' ? 'MAP范围，不反击；' : ''}作用于 ${who.join('、')}`;
             }
             case 'move':
                 return `向 ${name(plan.toward)} 前进，移动到 ${pos(plan.x, plan.y)}${terrainAt(b, plan.x, plan.y).name}`;

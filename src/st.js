@@ -1,6 +1,7 @@
 // SillyTavern 适配层：设置、聊天元数据、世界书、发送消息、提示词注入
 import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS } from './defaults.js';
 import { normalizeSkill } from './engine.js';
+import { profileFor } from './profiles.js';
 
 export const ctx = () => SillyTavern.getContext();
 
@@ -79,21 +80,29 @@ export function saveSettings() {
 // ---------------------------------------------------------------- 战斗状态（按聊天保存）
 
 export function getBattle() {
+    const bound = boundProfile();
+    if (!bound) return null;
     const meta = ctx().chatMetadata;
-    return meta?.[META_KEY] || null;
+    const battle = meta?.[META_KEY];
+    return battle && (!battle.profileId || battle.profileId === bound.id) ? battle : null;
 }
 
 export function setBattle(battle) {
+    const bound = boundProfile();
+    if (!bound || (battle?.profileId && battle.profileId !== bound.id)) return false;
     const c = ctx();
     if (!c.chatMetadata) return;
+    if (!battle && c.chatMetadata[META_KEY]?.profileId && c.chatMetadata[META_KEY].profileId !== bound.id) return false;
     if (battle) c.chatMetadata[META_KEY] = battle;
     else delete c.chatMetadata[META_KEY];
     saveBattle();
 }
 
 export function saveBattle() {
+    if (!boundProfile()) return;
     const c = ctx();
-    const b = c.chatMetadata?.[META_KEY];
+    const b = getBattle();
+    if (c.chatMetadata?.[META_KEY] && !b) return;
     if (b) b.rev = (b.rev || 0) + 1; // 版本号：用来判断某次改动之后棋盘是否又变过
     if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
     else if (typeof c.saveMetadata === 'function') c.saveMetadata();
@@ -102,6 +111,16 @@ export function saveBattle() {
 export function hasChat() {
     const c = ctx();
     return !!(c.getCurrentChatId?.() ?? c.chatId);
+}
+
+/** 仅当前角色 / 群组的显式绑定启用插件，不继承默认卡或群组成员的绑定。 */
+export function boundProfile(settings = null, owner = currentOwner()) {
+    if (!owner || !hasChat()) return null;
+    return profileFor(settings || getSettings(), owner.key);
+}
+
+export function isEnabledForChat() {
+    return !!boundProfile();
 }
 
 // ---------------------------------------------------------------- 世界书
@@ -180,6 +199,7 @@ export function substitute(text) {
  * @param {{position?:string, depth?:number, role?:string}} opt
  */
 export function setInjection(text, opt = {}) {
+    if (text && !getBattle()?.active) text = '';
     const c = ctx();
     if (typeof c.setExtensionPrompt !== 'function') return;
     c.setExtensionPrompt(INJECT_KEY, text ? substitute(text) : '', POSITIONS[opt.position] ?? 1, Number(opt.depth) || 0, true, ROLES[opt.role] ?? 0);
@@ -195,6 +215,7 @@ export function readMainInput() {
 }
 
 export function writeMainInput(text) {
+    if (!getBattle()?.active) return false;
     const ta = document.getElementById('send_textarea');
     if (!ta) return;
     ta.value = text;
@@ -203,6 +224,7 @@ export function writeMainInput(text) {
 
 /** 以用户身份发送消息并触发生成 */
 export function sendAsUser(text) {
+    if (!getBattle()?.active) return false;
     writeMainInput(text);
     const btn = document.getElementById('send_but');
     if (btn) btn.click();
@@ -225,6 +247,7 @@ export function chatLength() {
 
 /** 改写一条消息的正文（同时改写当前 swipe）并保存聊天 */
 export async function rewriteMessage(id, text) {
+    if (!getBattle()?.active) return;
     const c = ctx();
     const msg = c.chat?.[id];
     if (!msg) return;
@@ -239,6 +262,7 @@ export async function rewriteMessage(id, text) {
  * 兼容新旧两种 generateQuietPrompt 签名。
  */
 export async function quietGenerate(prompt) {
+    if (!getBattle()?.active) throw new Error('当前聊天未绑定资料卡或没有进行中的战斗');
     const c = ctx();
     const fn = c.generateQuietPrompt;
     if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持后台生成（generateQuietPrompt）');

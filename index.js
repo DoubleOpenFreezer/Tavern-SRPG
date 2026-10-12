@@ -1,6 +1,6 @@
 // Tavern-SRPG：SillyTavern 战棋插件入口
 import { App } from './src/ui/panel.js';
-import { ctx, getBattle } from './src/st.js';
+import { ctx } from './src/st.js';
 import { registerMacros, registerTool } from './src/llm.js';
 import { handleMessage, revertMessage, handleDeleted } from './src/ui/llm-flow.js';
 import { installBattleMessageFolding } from './src/ui/chat-messages.js';
@@ -62,7 +62,7 @@ jQuery(async () => {
     addMenuButton();
     addSettingsDrawer();
     registerCommand();
-    installBattleMessageFolding();
+    app.refreshMessageFolding = installBattleMessageFolding();
     try {
         registerMacros(app);
         registerTool(app);
@@ -79,8 +79,8 @@ jQuery(async () => {
     if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, guard(() => handleDeleted(app)));
     // 生成前再同步一次，确保注入的是最新战况
     if (eventTypes.GENERATION_STARTED) {
-        eventSource.on(eventTypes.GENERATION_STARTED, () => { if (getBattle()?.active) app.updateInjection(); });
+        eventSource.on(eventTypes.GENERATION_STARTED, () => app.updateInjection());
     }
-    app.updateInjection();
+    await app.onChatChanged();
     console.log('[Tavern-SRPG] loaded');
 });

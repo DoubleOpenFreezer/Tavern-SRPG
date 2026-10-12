@@ -135,6 +135,11 @@ export function renderBoard(o) {
         style: { gridTemplateColumns: `repeat(${o.w}, ${o.cell}px)`, gridAutoRows: `${o.cell}px`, '--cell': `${o.cell}px` },
     });
     const byPos = new Map((o.units || []).map(u => [`${u.x},${u.y}`, u]));
+    for (const effect of o.effects || []) {
+        if (effect.cls !== 'm-acting') continue;
+        const actor = (o.units || []).find(u => u.uid === effect.uid);
+        if (actor) byPos.set(`${actor.x},${actor.y}`, actor);
+    }
     for (let y = 0; y < o.h; y++) {
         for (let x = 0; x < o.w; x++) {
             const t = o.terrain(o.tiles[y * o.w + x]);
@@ -145,6 +150,12 @@ export function renderBoard(o) {
                 style: { background: t.color, color: contrast(t.color) },
             }, t.symbol ? h('span.tsrpg-sym', t.symbol) : null);
             for (const m of o.marks?.get(key) || []) cell.classList.add(m);
+            if (o.area?.some(([ax, ay]) => ax === x && ay === y)) cell.classList.add('m-area');
+            for (const effect of o.effects || []) {
+                if (effect.x !== x || effect.y !== y) continue;
+                if (effect.cls) cell.classList.add(effect.cls);
+                if (effect.text) cell.append(h('span.tsrpg-damage-number', effect.text));
+            }
             const u = byPos.get(key);
             if (u) cell.append(renderToken(u, u.uid && u.uid === o.selected));
             grid.append(cell);

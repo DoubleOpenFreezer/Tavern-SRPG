@@ -47,6 +47,8 @@ export function applyManualChange(b, change, data) {
                 }
             } else if (key === 'side') {
                 if (!Object.hasOwn(SIDE_NAMES, value)) throw new Error('无效阵营');
+            } else if (key === 'attackOrder') {
+                if (!['normal', 'last'].includes(value)) throw new Error('无效攻击顺序');
             } else if (['flying', 'acted', 'keyTarget'].includes(key)) {
                 if (typeof value !== 'boolean') throw new Error('无效开关值');
             } else throw new Error('不支持修改此属性');

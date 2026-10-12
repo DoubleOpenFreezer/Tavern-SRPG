@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { battleMessageTitle, foldBattleMessage } from '../src/ui/chat-messages.js';
+import { battleMessageTitle, foldBattleMessage, unfoldBattleMessage } from '../src/ui/chat-messages.js';
 import { composeMessage } from '../src/narrator.js';
 import { defaultSettings } from '../src/defaults.js';
 
@@ -31,11 +31,21 @@ class Element {
     querySelector(selector) {
         for (const child of this.childNodes) {
             if (selector.includes('textarea') && child.tagName === 'textarea') return child;
-            if (selector.includes('.tsrpg-chat-report') && child.className === 'tsrpg-chat-report') return child;
+            if (selector.split(',').map(s => s.trim()).includes(`.${child.className}`)) return child;
             const found = child.querySelector(selector);
             if (found) return found;
         }
         return null;
+    }
+    replaceWith(...nodes) {
+        const parent = this.parent;
+        const index = parent.childNodes.indexOf(this);
+        for (const node of nodes) {
+            if (node.parent) node.parent.childNodes.splice(node.parent.childNodes.indexOf(node), 1);
+            node.parent = parent;
+        }
+        parent.childNodes.splice(index, 1, ...nodes);
+        this.parent = null;
     }
 }
 
@@ -73,4 +83,9 @@ test('默认折叠，保留原消息和格式化节点，重复渲染不嵌套�
     text.append(rerendered);
     foldBattleMessage(text, message);
     assert.equal(text.childNodes[0].childNodes[1].childNodes[0], rerendered);
+    const extra = new Element('span');
+    text.append(extra);
+    unfoldBattleMessage(text);
+    assert.deepEqual(text.childNodes, [rerendered, extra], '解绑恢复原格式节点，同时保留其他插件的节点');
+    assert.deepEqual(message, before);
 });

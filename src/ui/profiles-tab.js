@@ -1,5 +1,5 @@
 // 资料卡页：管理资料卡、绑定到角色卡 / 群组、写入角色卡分享
-import { h, add, clear, toast, button, select, field, textInput, textArea } from './dom.js';
+import { h, add, clear, toast, button, select, field, textInput, textArea, checkbox } from './dom.js';
 import { makeProfile, sampleProfile, PROFILE_KEYS } from '../defaults.js';
 import {
     PROFILE_FORMAT, profilePayload, profilesFromPayload, addProfiles, getProfile, boundOwners, removeProfile, profileStats,
@@ -27,9 +27,8 @@ function ownerSection(app) {
     if (!owner) {
         return add(box, h('div.tsrpg-section-title', '当前聊天'), h('div.tsrpg-muted', '打开一个角色或群组聊天后，可以把资料卡绑定到它。'));
     }
-    const def = getProfile(s, s.defaultProfile);
     const bound = s.bindings[owner.key] || '';
-    const sel = select([['', `不绑定（使用默认：${def?.name || '—'}）`], ...s.profiles.map(p => [p.id, p.name])], bound, v => {
+    const sel = select([['', '不绑定（停用战棋，不影响聊天）'], ...s.profiles.map(p => [p.id, p.name])], bound, v => {
         if (v) s.bindings[owner.key] = v;
         else delete s.bindings[owner.key];
         app.save();
@@ -65,6 +64,7 @@ function cardSection(app, owner) {
             await ST.writeCardExtension(owner.characterId, profilePayload(p));
             s.bindings[owner.key] = p.id;
             app.save();
+            await app.syncProfileWithChat();
             toast('success', `已把资料卡「${p.name}」写入 ${owner.name} 的角色卡，并绑定到这个角色。导出角色卡时会一起带上。`);
             app.render();
         } catch (err) {
@@ -77,6 +77,7 @@ function cardSection(app, owner) {
         s.bindings[owner.key] = added.id;
         app.save();
         app.switchProfile(added.id, { quiet: true });
+        app.syncProfileWithChat();
         toast('success', `已导入资料卡「${added.name}」`);
         app.render();
     };
@@ -97,7 +98,7 @@ function cardSection(app, owner) {
             emb && !inSync ? button('从角色卡导入', importFromCard, { icon: 'fa-file-import' }) : null,
             emb ? button('', removeFromCard, { icon: 'fa-trash', cls: 'danger', title: '从角色卡中移除附带的资料卡' }) : null,
         ),
-        h('small.tsrpg-muted', '写入后，别人导入这张角色卡、第一次打开聊天时，会被询问是否导入并绑定这张资料卡。'),
+        h('small.tsrpg-muted', '分享后，需要在「资料卡」页手动从角色卡导入并绑定；打开未绑定聊天不会自动启用。'),
     );
 }
 
@@ -128,9 +129,10 @@ function listSection(app) {
         h('div.tsrpg-muted', '资料卡包含单位、地形、地图和战斗规则。「单位」「地形」「地图」页和设置里的战斗规则，编辑的都是正在使用的资料卡。'),
         h('div.tsrpg-active-profile',
             h('div.tsrpg-grid2',
-                field('正在使用', textInput(active.name, v => { active.name = v.trim() || active.name; app.save(); app.render(); })),
+                field('正在编辑', textInput(active.name, v => { active.name = v.trim() || active.name; app.save(); app.render(); })),
                 field('简介', textInput(active.desc, v => { active.desc = v; app.save(); }, '这张资料卡讲的是什么故事')),
             )),
+        multiBindings(app, active),
         s.profiles.map(p => profileItem(app, p)),
     );
 }
@@ -138,19 +140,16 @@ function listSection(app) {
 function profileItem(app, p) {
     const s = app.settings;
     const isActive = p.id === s.activeProfile;
-    const isDefault = p.id === s.defaultProfile;
     const owners = boundOwners(s, p.id).map(k => ST.ownerName(k) || k.replace(/^char:/, '').replace(/\.png$/, ''));
     return h(`div.tsrpg-profile${isActive ? '.active' : ''}`,
         h('div.tsrpg-card-title',
             h('b', p.name),
-            isActive ? h('span.tsrpg-tag.key', '使用中') : null,
-            isDefault ? h('span.tsrpg-tag', '默认') : null),
+            isActive ? h('span.tsrpg-tag.key', '编辑中') : null),
         p.desc ? h('div.tsrpg-muted', p.desc) : null,
         h('div.tsrpg-muted', profileStats(p)),
         owners.length ? h('div.tsrpg-muted', h('i.fa-solid.fa-link'), ` 绑定：${owners.join('、')}`) : null,
         h('div.tsrpg-row',
-            isActive ? null : button('使用', () => app.switchProfile(p.id), { icon: 'fa-check', cls: 'primary' }),
-            isDefault ? null : button('设为默认', () => { s.defaultProfile = p.id; app.save(); app.render(); }, { icon: 'fa-star', title: '没有绑定资料卡的聊天使用默认资料卡' }),
+            isActive ? null : button('编辑', () => app.switchProfile(p.id), { icon: 'fa-pen', cls: 'primary' }),
             button('', () => {
                 const [copy] = addProfiles(s, [{ ...structuredClone(p), id: undefined, name: `${p.name}（副本）` }], { normalize: ST.normalizeProfile });
                 app.save();
@@ -163,6 +162,7 @@ function profileItem(app, p) {
                 try {
                     removeProfile(s, p.id);
                     app.save();
+                    app.syncProfileWithChat();
                     app.ed = app.ed && { ...app.ed, unitId: null, mapId: null, terrainId: null };
                     app.render();
                 } catch (err) {
@@ -170,5 +170,27 @@ function profileItem(app, p) {
                 }
             }, { icon: 'fa-trash', cls: 'danger', title: '删除', disabled: s.profiles.length <= 1 }),
         ),
+    );
+}
+
+/** 一个资料卡可绑定任意多个角色，每个角色独立保存聊天战斗。 */
+function multiBindings(app, profile) {
+    const s = app.settings;
+    const characters = ST.ctx().characters || [];
+    return h('details.tsrpg-multi-bindings',
+        h('summary', `为「${profile.name}」绑定多个角色卡`),
+        h('small.tsrpg-muted', '勾选启用，可同时绑定多个角色；取消勾选只解除这张资料卡的绑定。绑定到其他资料卡的角色会在勾选后切换。'),
+        characters.filter(ch => ch.avatar).map(ch => {
+            const key = `char:${ch.avatar}`;
+            const existing = getProfile(s, s.bindings[key]);
+            return checkbox(`${ch.name || ch.avatar}${existing && existing.id !== profile.id ? `（已绑定：${existing.name}）` : ''}`, s.bindings[key] === profile.id, async enabled => {
+                if (enabled) s.bindings[key] = profile.id;
+                else if (s.bindings[key] === profile.id) delete s.bindings[key];
+                app.save();
+                if (ST.currentOwner()?.key === key) await app.syncProfileWithChat();
+                app.render();
+            });
+        }),
+        !characters.length ? h('div.tsrpg-muted', '没有可绑定的角色卡。') : null,
     );
 }

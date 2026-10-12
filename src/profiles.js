@@ -60,7 +60,8 @@ export function getProfile(settings, id) {
 
 /** 某个聊天（角色 / 群组）应该使用的资料卡 */
 export function profileFor(settings, ownerKey) {
-    return getProfile(settings, settings.bindings?.[ownerKey]) || getProfile(settings, settings.defaultProfile) || settings.profiles[0] || null;
+    const id = ownerKey && settings.bindings?.[ownerKey];
+    return typeof id === 'string' && id ? getProfile(settings, id) : null;
 }
 
 /** 绑定到某张资料卡的角色 / 群组 */

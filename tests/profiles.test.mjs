@@ -46,15 +46,18 @@ test('同 id 导入：默认作为副本，可选覆盖', () => {
     assert.equal(s.profiles[0].name, '改过的');
 });
 
-test('绑定：角色绑定优先，否则用默认资料卡；删除时清理绑定', () => {
+test('显式绑定才启用，一张资料卡可绑定多个角色；删除时清理所有绑定', () => {
     const s = defaultSettings();
     const b = makeProfile({ name: '乙' });
     s.profiles.push(b);
     s.bindings['char:alice.png'] = b.id;
+    s.bindings['char:carol.png'] = b.id;
     s.bindings['group:7'] = b.id;
     assert.equal(profileFor(s, 'char:alice.png').name, '乙');
-    assert.equal(profileFor(s, 'char:bob.png').id, SAMPLE_PROFILE_ID);
-    assert.deepEqual(boundOwners(s, b.id), ['char:alice.png', 'group:7']);
+    assert.equal(profileFor(s, 'char:bob.png'), null);
+    assert.equal(profileFor(s, 'char:carol.png').id, b.id);
+    assert.equal(profileFor(s, null), null);
+    assert.deepEqual(boundOwners(s, b.id), ['char:alice.png', 'char:carol.png', 'group:7']);
     s.activeProfile = b.id;
     removeProfile(s, b.id);
     assert.deepEqual(s.bindings, {});

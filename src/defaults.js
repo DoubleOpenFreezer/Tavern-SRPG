@@ -31,6 +31,8 @@ export function makeUnit(over = {}) {
         hp: 20, atk: 8, matk: 4, def: 4, mdef: 3, agi: 5, mov: 5,
         rangeMin: 1, rangeMax: 1,
         atkType: 'physical',
+        weaponName: '',
+        attackOrder: 'normal', // last：普通攻击时，对能回击的非后手目标让出先攻
         flying: false,
         ai: 'aggressive',
         skills: [],
@@ -50,6 +52,9 @@ export function makeSkill(over = {}) {
         power: 150, // 伤害技能的百分比倍率
         rangeMin: 1, rangeMax: 1,
         radius: 0, // 0 = 单体，>0 = 以目标格为中心的范围
+        attackMode: 'normal', // normal | mapLine | mapArea
+        lineLength: 3,
+        mapTargets: 'all', // all：除施法者外敌我全部；enemy：仅敌方
         cooldown: 0, // 冷却回合：N = 每 N 回合可用一次，0 = 无冷却
         hitMod: 0, // 命中修正（±%）
         sureHit: false, // 必中
@@ -174,6 +179,7 @@ export function defaultRules() {
     return {
         formula: 'diminishing', // 攻 × 威力% × 防御基准/(防御基准+防)，保留 subtract / ratio
         defenseScale: 12, // 防御等于此数值时减伤50%
+        defenseReduction: 50, // 选择防御时减伤%，且不反击
         variance: 10, // 伤害浮动 ±%
         counter: true, // 普通攻击是否触发反击
         minDamage: 1,
@@ -219,7 +225,7 @@ export function defaultSettings() {
         version: 5,
         profiles: [sampleProfile()],
         activeProfile: SAMPLE_PROFILE_ID,
-        defaultProfile: SAMPLE_PROFILE_ID, // 没有绑定资料卡的聊天使用它
+        defaultProfile: SAMPLE_PROFILE_ID, // 兼容旧设置，仅作编辑器回退；不启用未绑定聊天
         bindings: {}, // 'char:<头像文件名>' | 'group:<群组 id>' -> 资料卡 id
         declinedEmbeds: {}, // 不再询问导入的角色卡内置资料卡
         narration: {
@@ -270,6 +276,9 @@ export function defaultSettings() {
             fab: true, // 显示悬浮按钮
             fabPos: { right: 20, bottom: 140 },
             cell: 40, // 格子大小上限（会根据面板宽度自动缩小）
+            animate: true,
+            actionDelay: 260,
+            confirmDefense: true,
             left: null, top: null, width: null, height: null, tab: 'battle',
         },
     };
