@@ -1,6 +1,7 @@
 // 设置页：描写模式、发送方式、战斗规则、注入、导入导出
 import { h, clear, toast, button, select, field, numInput, textArea, checkbox } from './dom.js';
 import { DEFAULT_HEADER, defaultSettings } from '../defaults.js';
+import { normalizeSkill } from '../engine.js';
 
 const EXPORT_KEYS = ['terrains', 'units', 'maps', 'rules', 'narration', 'send', 'inject'];
 
@@ -20,6 +21,7 @@ export function renderSettingsTab(app, root) {
             checkbox('描写友军行动', s.narration.ally, on(s.narration, 'ally')),
             checkbox('描写回合切换 / 地形回复', s.narration.turn, on(s.narration, 'turn')),
             checkbox('描写增援出现', s.narration.reinforce, on(s.narration, 'reinforce')),
+            checkbox('描写状态变化（中毒 / 持续恢复 / 眩晕 / 效果结束）', s.narration.status, on(s.narration, 'status')),
             checkbox('不描写的行动作为背景简要告知', s.narration.brief, on(s.narration, 'brief'), '开启后，未勾选描写的行动仍会以一句话告诉 LLM，避免它不知道发生了什么'),
         ),
 
@@ -108,6 +110,7 @@ function importData(app) {
                     s[k] = { ...s[k], ...data[k] };
                 }
             }
+            for (const u of s.units || []) (u.skills || []).forEach(normalizeSkill);
             app.save(); app.render();
             toast('success', '导入完成');
         } catch (err) {

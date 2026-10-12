@@ -151,6 +151,16 @@ export function renderToken(u, selected = false) {
     if (u.maxHp) el.append(h('div.tsrpg-hpbar', h('div', { style: { width: `${pct}%` } })));
     if (u.kind === 'object' || u.object) el.classList.add('object');
     if (u.keyTarget) el.append(h('span.tsrpg-key', { title: '关键目标' }, '★'));
+    const st = u.statuses || [];
+    if (st.length) {
+        const icons = [];
+        if (st.some(x => x.type === 'taunt')) icons.push(h('i.fa-solid.fa-bullhorn', { title: '嘲讽' }));
+        if (st.some(x => x.type === 'stun')) icons.push(h('i.fa-solid.fa-face-dizzy', { title: '眩晕' }));
+        if (st.some(x => x.type === 'poison')) icons.push(h('i.fa-solid.fa-skull-crossbones', { title: '中毒' }));
+        if (st.some(x => /_up$|regen/.test(x.type))) icons.push(h('span.up', '▲'));
+        if (st.some(x => /_down$/.test(x.type))) icons.push(h('span.down', '▼'));
+        el.append(h('span.tsrpg-status', icons));
+    }
     if (u.acted) el.classList.add('acted');
     if (selected) el.classList.add('selected');
     return el;

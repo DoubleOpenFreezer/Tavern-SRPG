@@ -1,12 +1,12 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
 import { h, clear, toast, button, select, renderBoard, textArea } from './dom.js';
 import * as E from '../engine.js';
-import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves } from '../narrator.js';
+import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
 
 const PHASE = { player: '我方阶段', enemy: '敌方阶段', ally: '友军阶段' };
 const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动' };
-const KIND = { physical: '物理', magical: '魔法', heal: '治疗' };
+const KIND = { physical: '物理', magical: '魔法', support: '辅助' };
 
 /** 战场交互状态（不持久化） */
 export function newBattleUi() {
@@ -82,7 +82,7 @@ function selUnit(b, ui) {
 }
 
 function canControl(b, u) {
-    return u && u.hp > 0 && u.side === 'player' && !u.object && !u.acted && b.phase === 'player' && !b.result;
+    return u && u.hp > 0 && u.side === 'player' && !u.object && !E.isStunned(u) && !u.acted && b.phase === 'player' && !b.result;
 }
 
 function computeMarks(b, ui) {
@@ -124,7 +124,7 @@ function computeMarks(b, ui) {
     if (ui.mode === 'skill') {
         const sk = u.skills.find(s => s.id === ui.skillId);
         if (sk) {
-            for (const [x, y] of E.skillTargetTiles(b, u, sk)) add(x, y, sk.kind === 'heal' ? 'm-heal' : 'm-skill');
+            for (const [x, y] of E.skillTargetTiles(b, u, sk)) add(x, y, E.skillTargetSide(sk) === 'enemy' ? 'm-skill' : 'm-heal');
         }
     }
     return marks;
@@ -233,10 +233,18 @@ function onHover(app, b, x, y, refs) {
                 refs.board.querySelector(`[data-x="${ax}"][data-y="${ay}"]`)?.classList.add('m-area');
             }
             const aff = E.skillAffected(b, u, sk, x, y);
-            preview = aff.map(t => sk.kind === 'heal'
-                ? `${t.name} +${E.calcHeal(u, t, sk.power, app.settings.rules, Math.random, true)}`
-                : `${t.name} -${E.calcDamage(b, u, t, sk.kind, sk.power, app.settings.rules, Math.random, true)}`).join('，');
-            if (preview) preview = `【${sk.name}】预计：${preview}`;
+            const rules = app.settings.rules;
+            const fx = sk.effects.filter(e => !['heal', 'heal_pct'].includes(e.type)).map(e => E.effectLabel(e));
+            preview = aff.map(t => {
+                const bits = [];
+                if (sk.kind !== 'support') bits.push(`-${E.calcDamage(b, u, t, sk.kind, sk.power, rules, Math.random, true)}`);
+                for (const e of sk.effects) {
+                    if (e.type === 'heal') bits.push(`+${E.calcHeal(u, t, Number(e.value) || 0, rules, Math.random, true)}`);
+                    if (e.type === 'heal_pct') bits.push(`+${Math.min(t.maxHp - t.hp, Math.round(t.maxHp * (Number(e.value) || 0) / 100))}`);
+                }
+                return `${t.name} ${bits.join(' ')}`.trim();
+            }).join('，');
+            if (preview) preview = `【${sk.name}】预计：${preview}${fx.length ? `；附加 ${fx.join('、')}` : ''}`;
         }
     }
     const at = E.unitAt(b, x, y);
@@ -267,31 +275,39 @@ function unitCard(b, u, compact = false) {
             u.object ? h('span.tsrpg-tag', '建筑') : null,
             u.keyTarget ? h('span.tsrpg-tag.key', '★ 关键目标') : null,
             u.acted && !u.object ? h('span.tsrpg-tag', '已行动') : null,
+            E.taunters(b, u).length ? h('span.tsrpg-tag.dead', `被嘲讽：只能攻击${E.taunters(b, u).map(t => t.name).join('、')}`) : null,
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),
         h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), h('span', `HP ${u.hp}/${u.maxHp}`)),
         statGrid(u),
+        (u.statuses || []).length ? h('div.tsrpg-statuses', u.statuses.map(st => {
+            const def = E.EFFECTS[st.type] || {};
+            return h(`span.tsrpg-chip${def.debuff ? '.debuff' : ''}`, { title: def.help || '' }, `${E.effectLabel(st)} · ${st.turns}回合`);
+        })) : null,
         compact ? null : h('div.tsrpg-muted', u.object
             ? `不会行动 · 位于${t.name}(${u.x + 1},${u.y + 1})`
             : `${KIND[u.atkType]}攻击${u.flying ? ' · 飞行' : ''}${u.side !== 'player' ? ` · ${AI_NAMES[u.ai] || u.ai}` : ''} · 位于${t.name}(${u.x + 1},${u.y + 1})`),
         !compact && u.skills.length ? h('div.tsrpg-skills', u.skills.map(sk =>
-            h('div.tsrpg-muted', `【${sk.name}】${KIND[sk.kind]} ${sk.power}% 射程${sk.rangeMin}-${sk.rangeMax}${sk.radius ? ` 范围${sk.radius}` : ''}${sk.uses ? ` 剩余${sk.usesLeft}/${sk.uses}` : ''}`))) : null,
+            h('div.tsrpg-muted', `【${sk.name}】${skillSummary(sk)}${sk.cdLeft > 0 ? `（冷却中，第 ${E.readyTurn(b, u, sk)} 回合可用）` : ''}`))) : null,
         u.wb ? h('div.tsrpg-muted', h('i.fa-solid.fa-book'), ` ${u.wb.book} › ${u.wb.label}`) : null,
     );
 }
 
 function statGrid(u) {
-    if (u.object) {
-        return h('div.tsrpg-stats', [['DEF', u.def], ['MDEF', u.mdef]].map(([k, v]) => h('div', h('small', k), h('b', String(v)))));
-    }
+    // 受增益 / 减益影响的属性显示为绿色 / 红色
+    const cell = (label, key) => {
+        const base = u[key], now = E.stat(u, key);
+        return h('div', h('small', label), h(`b${now > base ? '.up' : now < base ? '.down' : ''}`, { title: now !== base ? `基础 ${base}` : '' }, String(now)));
+    };
+    if (u.object) return h('div.tsrpg-stats', cell('DEF', 'def'), cell('MDEF', 'mdef'));
     return h('div.tsrpg-stats',
-        [['ATK', u.atk], ['MATK', u.matk], ['DEF', u.def], ['MDEF', u.mdef], ['MOV', u.mov],
-            ['射程', u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`]]
-            .map(([k, v]) => h('div', h('small', k), h('b', String(v)))));
+        cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('MOV', 'mov'),
+        h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))));
 }
 
 function actionPanel(app, b, u) {
     const ui = app.bs;
     if (!u || u.side !== 'player' || u.object || b.phase !== 'player' || b.result) return null;
+    if (E.isStunned(u)) return h('div.tsrpg-warn', '眩晕中，本回合无法行动。');
     if (ui.mode === 'move') {
         return h('div.tsrpg-actions',
             h('div.tsrpg-muted', '点击蓝色格子移动（点击自身＝原地行动）。'),
@@ -306,8 +322,19 @@ function actionPanel(app, b, u) {
         u.skills.map(sk => {
             const tiles = E.skillTargetTiles(b, u, sk);
             const ok = E.skillUsable(sk) && tiles.length;
-            return button(`${sk.name}${sk.uses ? ` ${sk.usesLeft}/${sk.uses}` : ''}`, () => { ui.mode = 'skill'; ui.skillId = sk.id; app.render(); },
-                { icon: sk.kind === 'heal' ? 'fa-heart' : 'fa-wand-sparkles', disabled: !ok, cls: ui.mode === 'skill' && ui.skillId === sk.id ? 'active' : '', title: sk.desc });
+            const side = E.skillTargetSide(sk);
+            let label = sk.name;
+            if (sk.cdLeft > 0) label += ` ⏳第${E.readyTurn(b, u, sk)}回合`;
+            else if (sk.uses) label += ` ${sk.usesLeft}/${sk.uses}`;
+            // 只作用于自身的技能直接释放
+            const onClick = side === 'self'
+                ? () => act(app, b, () => E.doSkill(b, u, sk, u.x, u.y, app.settings.rules))
+                : () => { ui.mode = 'skill'; ui.skillId = sk.id; app.render(); };
+            return button(label, onClick, {
+                icon: sk.kind !== 'support' ? 'fa-wand-sparkles' : side === 'enemy' ? 'fa-skull' : sk.effects.some(e => e.type.startsWith('heal')) ? 'fa-heart' : 'fa-shield-heart',
+                disabled: !ok, cls: ui.mode === 'skill' && ui.skillId === sk.id ? 'active' : '',
+                title: `${skillSummary(sk)}${sk.desc ? `\n${sk.desc}` : ''}`,
+            });
         }),
         button('待机', () => act(app, b, () => E.doWait(b, u)), { icon: 'fa-hourglass' }),
         button('撤销移动', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length }),
@@ -340,7 +367,7 @@ function renderActive(app, root, b) {
     const status = b.result
         ? h(`span.tsrpg-result.${b.result}`, b.result === 'victory' ? '胜利' : '战败')
         : h('span.tsrpg-tag', PHASE[b.phase] || b.phase);
-    const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted).length;
+    const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted && !E.isStunned(x)).length;
 
     const refs = {};
     refs.preview = h('div.tsrpg-preview');
@@ -401,7 +428,7 @@ function renderActive(app, root, b) {
 }
 
 function endTurn(app, b) {
-    const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted).length;
+    const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted && !E.isStunned(x)).length;
     if (left && !confirm(`还有 ${left} 个我方单位未行动，确定结束回合吗？`)) return;
     const events = E.endPlayerPhase(b, app.settings.rules);
     b.pending.push(...events);

@@ -60,7 +60,8 @@ test('范围技能命中多个敌人并扣除次数', () => {
     const fb = mage.skills[0];
     const ev = E.doSkill(b, mage, fb, 7, 4, S.rules, fixed);
     assert.equal(ev.results.length, 2);
-    assert.equal(fb.usesLeft, 1);
+    assert.equal(fb.cdLeft, 2);
+    assert.equal(E.skillUsable(fb), false, '冷却中');
 });
 
 test('AI 会接近并攻击，最终分出胜负', () => {

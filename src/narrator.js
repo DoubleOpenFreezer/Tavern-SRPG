@@ -1,8 +1,8 @@
 // 把战斗事件 / 战场状态翻译成给 LLM 的文本
-import { SIDE_NAMES, MISSION_NAMES, alive, terrainAt, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn } from './engine.js';
+import { SIDE_NAMES, MISSION_NAMES, alive, terrainAt, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel } from './engine.js';
 
 const pos = p => `(${p.x + 1},${p.y + 1})`;
-const KIND = { physical: '物理', magical: '魔法', heal: '治疗' };
+const KIND = { physical: '物理', magical: '魔法', support: '辅助', heal: '治疗' };
 
 function who(r) {
     // 绑定了世界书的单位附带关键词，方便触发世界书条目
@@ -21,6 +21,7 @@ export function eventCategory(e) {
         case 'skill': return 'skill';
         case 'phase': case 'terrainHeal': case 'mission': return 'turn';
         case 'reinforce': return 'reinforce';
+        case 'dot': case 'statusEnd': case 'stunned': return 'status';
         case 'result': return 'result';
         default: return 'other';
     }
@@ -55,12 +56,28 @@ export function formatEvent(e) {
         }
         case 'skill': {
             const parts = e.results.map(r => {
-                if (r.heal != null) return `${who(r.target)} 恢复 ${r.heal} 点生命（${hpChange(r)}）`;
-                return `${who(r.target)} 受到 ${r.damage} 点伤害（${hpChange(r)}）${r.killed ? '，被击败' : ''}`;
+                const bits = [];
+                if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
+                if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
+                for (const ef of r.effects || []) {
+                    if (ef.heal != null) continue;
+                    if (ef.type === 'cleanse') bits.push(ef.removed?.length ? `被驱散了${ef.removed.map(x => `【${x}】`).join('')}` : '被净化（没有减益）');
+                    else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
+                }
+                const hp = r.hpBefore !== r.hpAfter ? `（${hpChange(r)}）` : '';
+                return `${who(r.target)} ${bits.join('，') || '不受影响'}${hp}${r.killed ? '，被击败' : ''}`;
             });
             const desc = e.skill.desc ? `（${e.skill.desc}）` : '';
             return `${who(e.actor)} 释放${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}：${parts.join('；')}。`;
         }
+        case 'dot':
+            return e.effect === 'poison'
+                ? `${who(e.actor)} 受到毒素侵蚀，损失 ${e.hpBefore - e.hpAfter} 点生命（${hpChange(e)}）。`
+                : `${who(e.actor)} 在【${e.label}】效果下恢复了 ${e.hpAfter - e.hpBefore} 点生命（${hpChange(e)}）。`;
+        case 'stunned':
+            return `${who(e.actor)} 处于眩晕状态，无法行动。`;
+        case 'statusEnd':
+            return `${who(e.actor)} 身上的${e.effects.map(x => `【${x}】`).join('')}效果结束了。`;
         case 'phase':
             return e.phase === 'player' ? `—— 第 ${e.turn} 回合 · 我方阶段开始 ——` : `—— 第 ${e.turn} 回合 · ${SIDE_NAMES[e.phase]}阶段 ——`;
         case 'terrainHeal':
@@ -151,7 +168,8 @@ export function stateSummary(battle, wbContents = {}) {
             if (u.hp <= 0) return `${u.name}（${u.object ? '已被摧毁' : '已被击败'}）`;
             const t = terrainAt(battle, u.x, u.y);
             const tag = u.keyTarget ? '【关键目标】' : u.object ? '【建筑】' : '';
-            return `${u.name}${tag} HP ${u.hp}/${u.maxHp} 位于${pos(u)}${t.name}`;
+            const st = (u.statuses || []).map(x => `${effectLabel(x)}·剩${x.turns}回合`);
+            return `${u.name}${tag} HP ${u.hp}/${u.maxHp} 位于${pos(u)}${t.name}${st.length ? `〔${st.join('、')}〕` : ''}`;
         });
         lines.push(`${SIDE_NAMES[side]}：${desc.join('；')}`);
     }
@@ -190,4 +208,21 @@ export function upcomingWaves(battle) {
         const name = battle.unitDefs?.[w.unitId]?.name || '?';
         return `第 ${t} 回合 ${SIDE_NAMES[w.side]}${name}×${Math.max(1, Number(w.count) || 1)} 于${pos(w)}`;
     }).filter(Boolean).join('；');
+}
+
+const TARGET_NAMES = { ally: '友方', enemy: '敌方', self: '自身' };
+
+/** 技能的一行说明，例如「辅助·友方 射程0-2 范围1 冷却3回合｜防御力上升30%（2回合）」 */
+export function skillSummary(sk) {
+    const side = sk.kind === 'support' ? (sk.target || 'ally') : 'enemy';
+    const parts = [sk.kind === 'support' ? `辅助·${TARGET_NAMES[side]}` : `${KIND[sk.kind]} ${sk.power}%`];
+    if (side !== 'self') parts.push(`射程${sk.rangeMin}-${sk.rangeMax}`);
+    if (side !== 'self' && Number(sk.radius)) parts.push(`范围${sk.radius}`);
+    if (Number(sk.cooldown) > 1) parts.push(`冷却${sk.cooldown}回合`);
+    if (sk.uses) parts.push(`剩余${sk.usesLeft ?? sk.uses}/${sk.uses}次`);
+    const fx = (sk.effects || []).map(e => {
+        const label = effectLabel(e);
+        return e.type === 'heal' ? `恢复HP（MATK×${e.value}%）` : e.type === 'heal_pct' ? `恢复HP（最大HP×${e.value}%）` : e.turns && !['cleanse'].includes(e.type) ? `${label}（${e.turns}回合）` : label;
+    });
+    return parts.join(' ') + (fx.length ? `｜${fx.join('、')}` : '');
 }

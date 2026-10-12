@@ -43,11 +43,14 @@ export function makeSkill(over = {}) {
     return {
         id: uid('sk'),
         name: '新技能',
-        kind: 'physical', // physical | magical | heal
-        power: 150, // 百分比倍率
+        kind: 'physical', // physical 物理伤害 | magical 魔法伤害 | support 辅助
+        target: 'enemy', // 辅助技能的作用对象：ally 友方（含自己）| enemy 敌方 | self 仅自己
+        power: 150, // 伤害技能的百分比倍率
         rangeMin: 1, rangeMax: 1,
         radius: 0, // 0 = 单体，>0 = 以目标格为中心的范围
+        cooldown: 0, // 冷却回合：N = 每 N 回合可用一次，0 = 无冷却
         uses: 0, // 0 = 无限
+        effects: [], // 预设效果 [{ type, value, turns }]，type 见 engine.js 的 EFFECTS
         desc: '',
         ...over,
     };
@@ -83,14 +86,23 @@ export function makeWave(over = {}) {
 
 function sampleData() {
     const knight = makeUnit({ id: 'unit_sample_knight', name: '骑士', side: 'player', icon: '骑', hp: 32, atk: 12, matk: 2, def: 9, mdef: 3, mov: 5,
-        skills: [makeSkill({ id: 'sk_sample_charge', name: '冲锋', kind: 'physical', power: 160, uses: 2, desc: '全力冲刺后的重击' })] });
+        skills: [
+            makeSkill({ id: 'sk_sample_charge', name: '冲锋', kind: 'physical', power: 160, cooldown: 2, desc: '全力冲刺后的重击' }),
+            makeSkill({ id: 'sk_sample_provoke', name: '挑衅', kind: 'support', target: 'self', rangeMin: 0, rangeMax: 0, cooldown: 3,
+                effects: [{ type: 'taunt', value: 0, turns: 1 }, { type: 'def_up', value: 20, turns: 1 }], desc: '高举盾牌大声挑衅，吸引所有敌人的攻击' }),
+        ] });
     const mage = makeUnit({ id: 'unit_sample_mage', name: '法师', side: 'player', icon: '法', hp: 22, atk: 3, matk: 13, def: 3, mdef: 9, mov: 4, rangeMin: 1, rangeMax: 2, atkType: 'magical',
         skills: [
-            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, uses: 2, desc: '在目标处炸开的火球' }),
-            makeSkill({ id: 'sk_sample_heal', name: '治愈', kind: 'heal', power: 120, rangeMin: 0, rangeMax: 2, radius: 0, uses: 3, desc: '温暖的治愈之光' }),
+            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, cooldown: 2, desc: '在目标处炸开的火球' }),
+            makeSkill({ id: 'sk_sample_heal', name: '治愈', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, cooldown: 1,
+                effects: [{ type: 'heal', value: 120, turns: 0 }], desc: '温暖的治愈之光' }),
+            makeSkill({ id: 'sk_sample_guard', name: '守护之光', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, radius: 1, cooldown: 3,
+                effects: [{ type: 'def_up', value: 30, turns: 2 }, { type: 'mdef_up', value: 30, turns: 2 }], desc: '笼罩同伴的金色光幕' }),
         ] });
     const goblin = makeUnit({ id: 'unit_sample_goblin', name: '哥布林', side: 'enemy', icon: '哥', hp: 18, atk: 9, matk: 0, def: 3, mdef: 1, mov: 5 });
-    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive' });
+    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive',
+        skills: [makeSkill({ id: 'sk_sample_poison', name: '毒箭', kind: 'physical', power: 80, rangeMin: 2, rangeMax: 3, cooldown: 3,
+            effects: [{ type: 'poison', value: 10, turns: 2 }], desc: '箭头涂着绿色的毒液' })] });
 
     const w = 12, h = 8;
     const tiles = new Array(w * h).fill('plain');
@@ -157,7 +169,7 @@ export const DEFAULT_HEADER = '【SRPG 战斗系统】以下行动结果已由�
 export function defaultSettings() {
     const sample = sampleData();
     return {
-        version: 1,
+        version: 2,
         terrains: structuredClone(DEFAULT_TERRAINS),
         units: sample.units,
         maps: sample.maps,
@@ -175,6 +187,7 @@ export function defaultSettings() {
             ally: true, // 描写友军行动
             turn: true, // 描写回合切换/地形恢复
             reinforce: true, // 描写增援出现
+            status: true, // 描写状态变化（中毒 / 持续恢复 / 眩晕 / 效果结束）
             brief: true, // 不描写的行动以简要背景告知
         },
         send: {

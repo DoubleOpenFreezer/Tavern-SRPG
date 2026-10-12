@@ -83,7 +83,7 @@ class Heap {
  * 计算可到达的格子（Dijkstra）。敌对单位阻挡通行，友方可穿过但不能停留。
  * @returns {Map<string,{x:number,y:number,cost:number,prev:string|null}>} 仅包含可停留的格子
  */
-export function reachable(b, unit, maxMove = unit.mov) {
+export function reachable(b, unit, maxMove = stat(unit, 'mov')) {
     const start = `${unit.x},${unit.y}`;
     const best = new Map([[start, { x: unit.x, y: unit.y, cost: 0, prev: null }]]);
     const queue = new Heap(n => n.cost);
@@ -156,7 +156,101 @@ export function tilesInRange(b, x, y, min, max) {
 }
 
 export function skillUsable(skill) {
-    return !skill.uses || skill.usesLeft > 0;
+    if (skill.uses && !(skill.usesLeft > 0)) return false;
+    return !(skill.cdLeft > 0);
+}
+
+/** 冷却中的技能在第几回合可再次使用（用于界面显示） */
+export function readyTurn(b, unit, skill) {
+    if (!(skill.cdLeft > 0)) return b.turn;
+    const order = ['player', 'enemy', 'ally'];
+    const started = order.indexOf(b.phase) >= order.indexOf(unit.side);
+    return b.turn + skill.cdLeft - (started ? 0 : 1);
+}
+
+// ---------------------------------------------------------------- 效果（增益 / 减益 / 立即）
+
+/**
+ * 预设效果。instant：立即生效；其余为持续效果，持续回合在「施法者阵营的阶段开始时」减 1。
+ * stat + sign：属性修正（flat 为固定值，否则为百分比）；debuff：可被驱散的减益。
+ */
+export const EFFECTS = {
+    heal: { name: '恢复HP', group: '立即', instant: true, value: 120, unit: '% MATK', help: '恢复 施法者MATK × 数值% 的生命' },
+    heal_pct: { name: '恢复HP（按比例）', group: '立即', instant: true, value: 30, unit: '% 最大HP', help: '恢复 目标最大HP × 数值% 的生命' },
+    cleanse: { name: '驱散减益', group: '立即', instant: true, noValue: true, help: '移除目标身上所有减益效果' },
+    atk_up: { name: '攻击力上升', group: '增益', stat: 'atk', sign: 1, value: 30, unit: '%' },
+    matk_up: { name: '魔攻上升', group: '增益', stat: 'matk', sign: 1, value: 30, unit: '%' },
+    def_up: { name: '防御力上升', group: '增益', stat: 'def', sign: 1, value: 30, unit: '%' },
+    mdef_up: { name: '魔防上升', group: '增益', stat: 'mdef', sign: 1, value: 30, unit: '%' },
+    mov_up: { name: '移动力上升', group: '增益', stat: 'mov', sign: 1, value: 2, unit: '格', flat: true },
+    regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
+    taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
+    atk_down: { name: '攻击力下降', group: '减益', stat: 'atk', sign: -1, value: 30, unit: '%', debuff: true },
+    matk_down: { name: '魔攻下降', group: '减益', stat: 'matk', sign: -1, value: 30, unit: '%', debuff: true },
+    def_down: { name: '防御力下降', group: '减益', stat: 'def', sign: -1, value: 30, unit: '%', debuff: true },
+    mdef_down: { name: '魔防下降', group: '减益', stat: 'mdef', sign: -1, value: 30, unit: '%', debuff: true },
+    mov_down: { name: '移动力下降', group: '减益', stat: 'mov', sign: -1, value: 2, unit: '格', flat: true, debuff: true },
+    poison: { name: '中毒', group: '减益', value: 10, unit: '% 最大HP / 回合', debuff: true, help: '每次自己阵营的阶段开始时损失生命，不会因此倒下' },
+    stun: { name: '眩晕', group: '减益', noValue: true, debuff: true, help: '无法行动' },
+};
+
+export function effectLabel(e) {
+    const def = EFFECTS[e.type];
+    if (!def) return e.type;
+    if (def.noValue || (e.type === 'taunt' && !Number(e.value))) return def.name;
+    if (e.type === 'taunt') return `${def.name}（${e.value}格）`;
+    if (def.instant) return def.name;
+    return `${def.name}${e.value}${def.flat ? '格' : '%'}`;
+}
+
+/** 旧版数据兼容：kind 'heal' → 辅助技能 + 恢复效果 */
+export function normalizeSkill(sk) {
+    if (sk.kind === 'heal') {
+        sk.kind = 'support';
+        sk.target = 'ally';
+        sk.effects = [{ type: 'heal', value: Number(sk.power) || 100, turns: 0 }];
+    }
+    if (!Array.isArray(sk.effects)) sk.effects = [];
+    if (!sk.target) sk.target = sk.kind === 'support' ? 'ally' : 'enemy';
+    if (sk.cooldown == null) sk.cooldown = 0;
+    return sk;
+}
+
+export function hasStatus(u, type) {
+    return (u.statuses || []).some(s => s.type === type);
+}
+
+export function isStunned(u) {
+    return hasStatus(u, 'stun');
+}
+
+/** 计入增益 / 减益后的属性 */
+export function stat(u, key) {
+    const base = Number(u[key]) || 0;
+    let pct = 0, flat = 0;
+    for (const s of u.statuses || []) {
+        const def = EFFECTS[s.type];
+        if (def?.stat !== key) continue;
+        if (def.flat) flat += def.sign * (Number(s.value) || 0);
+        else pct += def.sign * (Number(s.value) || 0);
+    }
+    return Math.max(0, Math.round(base * (1 + pct / 100) + flat));
+}
+
+/** 正在嘲讽该单位的敌人（以单位在本阶段开始时的位置判断范围） */
+export function taunters(b, unit) {
+    const px = unit.phaseX ?? unit.x, py = unit.phaseY ?? unit.y;
+    return alive(b).filter(t => isFoe(t, unit) && (t.statuses || []).some(s =>
+        s.type === 'taunt' && (!Number(s.value) || dist(t.x, t.y, px, py) <= Number(s.value))));
+}
+
+/** 技能作用于哪一方：enemy / ally / self */
+export function skillTargetSide(skill) {
+    return skill.kind === 'support' ? (skill.target || 'ally') : 'enemy';
+}
+
+function healOnly(skill) {
+    return skill.kind === 'support' && skill.effects?.length > 0 && skill.effects.every(e => e.type === 'heal' || e.type === 'heal_pct');
 }
 
 // ---------------------------------------------------------------- 伤害计算
@@ -173,8 +267,8 @@ function roll(rules, rng) {
  * @param {boolean} expected 为 true 时不计算随机浮动（用于预览和 AI）
  */
 export function calcDamage(b, attacker, defender, kind, power, rules, rng = Math.random, expected = false) {
-    const atk = (kind === 'magical' ? attacker.matk : attacker.atk) * (power / 100);
-    const def = kind === 'magical' ? defender.mdef : defender.def;
+    const atk = stat(attacker, kind === 'magical' ? 'matk' : 'atk') * (power / 100);
+    const def = stat(defender, kind === 'magical' ? 'mdef' : 'def');
     let dmg;
     if (rules.formula === 'ratio') {
         dmg = atk <= 0 ? 0 : (atk * atk) / (atk + Math.max(0, def));
@@ -188,7 +282,7 @@ export function calcDamage(b, attacker, defender, kind, power, rules, rng = Math
 }
 
 export function calcHeal(caster, target, power, rules, rng = Math.random, expected = false) {
-    let v = caster.matk * (power / 100);
+    let v = stat(caster, 'matk') * (power / 100);
     if (!expected) v *= roll(rules, rng);
     v = Math.max(1, Math.round(v));
     return Math.min(v, target.maxHp - target.hp);
@@ -229,10 +323,12 @@ export function doMove(b, unit, x, y) {
 }
 
 export function attackTargets(b, unit, fromX = unit.x, fromY = unit.y) {
-    return alive(b).filter(t => isFoe(t, unit) && (() => {
+    const forced = taunters(b, unit);
+    return alive(b).filter(t => {
+        if (!isFoe(t, unit) || (forced.length && !forced.includes(t))) return false;
         const d = dist(fromX, fromY, t.x, t.y);
         return d >= unit.rangeMin && d <= unit.rangeMax;
-    })());
+    });
 }
 
 export function previewAttack(b, unit, target, rules) {
@@ -249,6 +345,8 @@ export function doAttack(b, unit, target, rules, rng = Math.random) {
     if (!isFoe(unit, target) || target.hp <= 0 || d < unit.rangeMin || d > unit.rangeMax) {
         throw new Error('目标不在攻击范围内');
     }
+    const forced = taunters(b, unit);
+    if (forced.length && !forced.includes(target)) throw new Error(`被嘲讽，只能攻击${forced.map(t => t.name).join('、')}`);
     const dmg = calcDamage(b, unit, target, unit.atkType, 100, rules, rng);
     const hit = applyDamage(target, dmg);
     const ev = {
@@ -265,46 +363,89 @@ export function doAttack(b, unit, target, rules, rng = Math.random) {
     return ev;
 }
 
-/** 技能的目标格是否合法（会有至少一个受影响单位） */
+/** 以 (tx,ty) 为目标时会受到技能影响的单位 */
 export function skillAffected(b, unit, skill, tx, ty) {
+    const side = skillTargetSide(skill);
+    if (side === 'self') return unit.hp > 0 ? [unit] : [];
     const r = Number(skill.radius) || 0;
     return alive(b).filter(t => {
         if (dist(tx, ty, t.x, t.y) > r) return false;
-        return skill.kind === 'heal' ? !isFoe(t, unit) : isFoe(t, unit);
+        return side === 'ally' ? !isFoe(t, unit) : isFoe(t, unit);
     });
 }
 
 export function skillTargetTiles(b, unit, skill, fromX = unit.x, fromY = unit.y) {
+    const side = skillTargetSide(skill);
+    if (side === 'self') return [[fromX, fromY]];
+    const forced = side === 'enemy' ? taunters(b, unit) : [];
     return tilesInRange(b, fromX, fromY, Number(skill.rangeMin) || 0, Number(skill.rangeMax) || 0)
         .filter(([x, y]) => {
-            if ((Number(skill.radius) || 0) > 0) return true;
             const aff = skillAffected(b, unit, skill, x, y);
-            // 单体治疗只能对受伤的友方使用
-            return skill.kind === 'heal' ? aff.some(t => t.hp < t.maxHp) : aff.length > 0;
+            if (forced.length) return aff.some(t => forced.includes(t));
+            if ((Number(skill.radius) || 0) > 0) return true;
+            // 只有治疗效果的单体技能，只能对受伤的友方使用
+            return healOnly(skill) ? aff.some(t => t.hp < t.maxHp) : aff.length > 0;
         });
 }
 
+/** 对目标施加技能附带的效果，返回结果描述 */
+function applyEffects(caster, t, effects, rules, rng) {
+    const out = [];
+    t.statuses ||= [];
+    for (const e of effects || []) {
+        const def = EFFECTS[e.type];
+        if (!def) continue;
+        const value = Number(e.value) || 0;
+        if (e.type === 'heal' || e.type === 'heal_pct') {
+            const amount = e.type === 'heal'
+                ? calcHeal(caster, t, value, rules, rng)
+                : Math.min(t.maxHp - t.hp, Math.max(1, Math.round(t.maxHp * value / 100)));
+            t.hp += amount;
+            out.push({ type: e.type, label: def.name, heal: amount });
+        } else if (e.type === 'cleanse') {
+            const removed = t.statuses.filter(x => EFFECTS[x.type]?.debuff);
+            t.statuses = t.statuses.filter(x => !EFFECTS[x.type]?.debuff);
+            out.push({ type: e.type, label: def.name, removed: removed.map(effectLabel) });
+        } else {
+            const turns = Math.max(1, Number(e.turns) || 1);
+            t.statuses = t.statuses.filter(x => x.type !== e.type); // 同类效果刷新
+            t.statuses.push({ type: e.type, value, turns, srcSide: caster.side });
+            out.push({ type: e.type, label: effectLabel({ type: e.type, value }), turns, debuff: !!def.debuff });
+        }
+    }
+    return out;
+}
+
 export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random) {
-    if (!skillUsable(skill)) throw new Error('技能次数已用尽');
-    const d = dist(unit.x, unit.y, tx, ty);
-    if (d < (Number(skill.rangeMin) || 0) || d > (Number(skill.rangeMax) || 0)) throw new Error('目标不在技能范围内');
+    if (!skillUsable(skill)) throw new Error(skill.cdLeft > 0 ? '技能冷却中' : '技能次数已用尽');
+    const side = skillTargetSide(skill);
+    if (side === 'self') {
+        tx = unit.x; ty = unit.y;
+    } else if (!skillTargetTiles(b, unit, skill).some(([x, y]) => x === tx && y === ty)) {
+        throw new Error('目标不在技能范围内');
+    }
     const affected = skillAffected(b, unit, skill, tx, ty);
     if (!affected.length) throw new Error('该位置没有可作用的目标');
     const results = affected.map(t => {
-        if (skill.kind === 'heal') {
-            const amount = calcHeal(unit, t, skill.power, rules, rng);
-            const before = t.hp;
-            t.hp += amount;
-            return { target: ref(t), heal: amount, hpBefore: before, hpAfter: t.hp, killed: false };
+        const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
+        if (skill.kind !== 'support') {
+            r.damage = calcDamage(b, unit, t, skill.kind, skill.power, rules, rng);
+            r.killed = applyDamage(t, r.damage).killed;
         }
-        const dmg = calcDamage(b, unit, t, skill.kind, skill.power, rules, rng);
-        return { target: ref(t), damage: dmg, terrain: terrainAt(b, t.x, t.y).name, ...applyDamage(t, dmg) };
+        if (t.hp > 0) {
+            r.effects = applyEffects(unit, t, skill.effects, rules, rng);
+            const healed = r.effects.reduce((n, e) => n + (e.heal || 0), 0);
+            if (r.effects.some(e => e.heal != null)) r.heal = healed;
+        }
+        r.hpAfter = t.hp;
+        return r;
     });
     if (skill.uses) skill.usesLeft = Math.max(0, (skill.usesLeft ?? skill.uses) - 1);
+    if (Number(skill.cooldown) > 0) skill.cdLeft = Number(skill.cooldown);
     unit.acted = true; unit.moved = true;
     return {
         type: 'skill', turn: b.turn, actor: ref(unit),
-        skill: { name: skill.name, kind: skill.kind, desc: skill.desc || '' },
+        skill: { name: skill.name, kind: skill.kind, target: side, desc: skill.desc || '' },
         at: { x: tx, y: ty }, results,
     };
 }
@@ -397,17 +538,40 @@ export function commit(b, ev) {
 
 // ---------------------------------------------------------------- AI
 
+/** AI 对“给 t 施加效果 e”的估值 */
+function effectScore(b, caster, t, e, rules) {
+    const def = EFFECTS[e.type];
+    if (!def) return 0;
+    const v = Number(e.value) || 0;
+    const missing = t.maxHp - t.hp;
+    switch (e.type) {
+        case 'heal':
+            return missing / t.maxHp < 0.3 ? 0 : Math.min(missing, calcHeal(caster, t, v, rules, Math.random, true));
+        case 'heal_pct':
+            return missing / t.maxHp < 0.3 ? 0 : Math.min(missing, Math.round(t.maxHp * v / 100));
+        case 'cleanse':
+            return 8 * (t.statuses || []).filter(x => EFFECTS[x.type]?.debuff).length;
+    }
+    if (hasStatus(t, e.type)) return 0;
+    if (e.type === 'stun') return 18;
+    const foeNear = alive(b).some(f => isFoe(f, t) && !f.object && dist(f.x, f.y, t.x, t.y) <= stat(f, 'mov') + f.rangeMax + 1);
+    if (e.type === 'taunt') return foeNear && t.hp / t.maxHp >= 0.5 && !t.object ? 10 : 0;
+    if (e.type === 'regen') return missing > 0 ? 5 : 0;
+    if (def.debuff) return 6;
+    return foeNear ? 7 : 2;
+}
+
 /**
  * 在 (x,y) 位置能做出的最佳行动
- * @param {(t:object)=>boolean} filter 伤害类行动必须命中至少一个满足条件的目标
- * @param {boolean} heal 只考虑治疗技能
+ * @param {(t:object)=>boolean} filter 攻击类行动必须命中至少一个满足条件的目标
+ * @param {'attack'|'support'} mode attack：普通攻击与伤害技能；support：辅助技能
  */
-function bestActionAt(b, unit, x, y, rules, filter, heal) {
+function bestActionAt(b, unit, x, y, rules, filter, mode) {
     const ox = unit.x, oy = unit.y;
     unit.x = x; unit.y = y;
     let best = null;
     const consider = (cand) => { if (cand.score > 0 && (!best || cand.score > best.score)) best = cand; };
-    if (!heal) {
+    if (mode === 'attack') {
         for (const t of attackTargets(b, unit).filter(filter)) {
             const dmg = calcDamage(b, unit, t, unit.atkType, 100, rules, Math.random, true);
             let score = 1 + Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0);
@@ -418,25 +582,22 @@ function bestActionAt(b, unit, x, y, rules, filter, heal) {
         }
     }
     for (const sk of unit.skills || []) {
-        if (!skillUsable(sk) || (sk.kind === 'heal') !== heal) continue;
+        if (!skillUsable(sk) || (sk.kind === 'support') !== (mode === 'support')) continue;
         for (const [tx, ty] of skillTargetTiles(b, unit, sk)) {
             const aff = skillAffected(b, unit, sk, tx, ty);
             let score = 0;
-            if (heal) {
-                for (const t of aff) {
-                    const missing = t.maxHp - t.hp;
-                    if (missing / t.maxHp < 0.3) continue;
-                    score += Math.min(missing, calcHeal(unit, t, sk.power, rules, Math.random, true));
-                }
+            if (mode === 'support') {
+                for (const t of aff) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules);
             } else {
                 if (!aff.some(filter)) continue;
                 for (const t of aff) {
                     const dmg = calcDamage(b, unit, t, sk.kind, sk.power, rules, Math.random, true);
                     score += 1 + Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0);
+                    if (dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5;
                 }
             }
-            // 有次数限制的技能，略微倾向于保留
-            if (sk.uses) score *= 0.9;
+            // 有次数限制或冷却的技能，略微倾向于保留
+            if (sk.uses || Number(sk.cooldown) > 1) score *= 0.9;
             consider({ kind: 'skill', x, y, skill: sk, tx, ty, score });
         }
     }
@@ -444,10 +605,10 @@ function bestActionAt(b, unit, x, y, rules, filter, heal) {
     return best;
 }
 
-function bestAction(b, unit, nodes, rules, filter, heal = false) {
+function bestAction(b, unit, nodes, rules, filter, mode = 'attack') {
     let best = null;
     for (const node of nodes) {
-        const cand = bestActionAt(b, unit, node.x, node.y, rules, filter, heal);
+        const cand = bestActionAt(b, unit, node.x, node.y, rules, filter, mode);
         if (!cand) continue;
         cand.score -= node.cost * 0.01; // 同分时少走路
         if (!best || cand.score > best.score) best = cand;
@@ -455,8 +616,10 @@ function bestAction(b, unit, nodes, rules, filter, heal = false) {
     return best;
 }
 
-/** AI 想要攻击的目标：守城战的敌人盯着守卫目标，其余情况找角色（不含建筑物） */
+/** AI 想要攻击的目标：被嘲讽时只能是嘲讽者；守城战的敌人盯着守卫目标；其余情况找角色（不含建筑物） */
 export function goalTargets(b, unit) {
+    const forced = taunters(b, unit);
+    if (forced.length) return forced;
     const type = missionOf(b).type;
     const foes = alive(b).filter(t => isFoe(t, unit));
     const fighters = foes.filter(t => !t.object);
@@ -486,23 +649,36 @@ function execute(b, unit, plan, rules, rng, events) {
     else events.push(doSkill(b, unit, plan.skill, plan.tx, plan.ty, rules, rng));
 }
 
+function better(a, c) {
+    if (!a) return c;
+    if (!c) return a;
+    return c.score > a.score ? c : a;
+}
+
 /**
  * 让单个 AI 单位行动，返回事件列表
  * - 主动出击：按距离从近到远，攻击最近的能打到的目标；都打不到就朝最近的目标前进，途中顺手攻击射程内的敌人
- *   （守城战中敌人的目标是守卫目标，会无视我方角色直奔目标，只在被拦住时攻击挡路者）
+ *   （守城战中敌人的目标是守卫目标；被嘲讽时目标只能是嘲讽者）
  * - 原地迎击：只攻击移动后能打到的目标，不主动接近
  * - 固守不动：不移动，只攻击射程内的目标
+ * 辅助技能（治疗、增益、减益）与攻击比较估值，取较高者
  */
 export function aiAct(b, unit, rules, rng = Math.random) {
     const events = [];
     if (unit.hp <= 0 || unit.object || b.result) return events;
+    if (isStunned(unit)) {
+        unit.acted = true;
+        events.push({ type: 'stunned', turn: b.turn, actor: ref(unit) });
+        return events;
+    }
     const nodes = [...(unit.ai === 'stationary'
         ? [{ x: unit.x, y: unit.y, cost: 0 }]
         : reachable(b, unit).values())];
     const anyFoe = t => isFoe(t, unit);
+    const support = bestAction(b, unit, nodes, rules, anyFoe, 'support');
 
-    let plan = bestAction(b, unit, nodes, rules, () => false, true);
-    if (!plan && unit.ai === 'aggressive') {
+    let plan = null;
+    if (unit.ai === 'aggressive') {
         const goals = goalTargets(b, unit);
         const fromMe = distanceField(b, unit, [[unit.x, unit.y]]);
         const ordered = goals.map(g => [g, fieldDist(b, fromMe, g)]).sort((a, c) => a[1] - c[1]);
@@ -510,6 +686,7 @@ export function aiAct(b, unit, rules, rng = Math.random) {
             plan = bestAction(b, unit, nodes, rules, t => t === g);
             if (plan) break;
         }
+        plan = better(plan, support);
         if (!plan && goals.length) {
             // 朝最近的目标前进
             const field = distanceField(b, unit, goals.map(g => [g.x, g.y]));
@@ -522,10 +699,11 @@ export function aiAct(b, unit, rules, rng = Math.random) {
                 const mv = doMove(b, unit, dest.x, dest.y);
                 if (mv) events.push(mv);
             }
-            plan = bestAction(b, unit, [{ x: unit.x, y: unit.y, cost: 0 }], rules, anyFoe);
+            const here = [{ x: unit.x, y: unit.y, cost: 0 }];
+            plan = better(bestAction(b, unit, here, rules, anyFoe), bestAction(b, unit, here, rules, anyFoe, 'support'));
         }
-    } else if (!plan) {
-        plan = bestAction(b, unit, nodes, rules, anyFoe);
+    } else {
+        plan = better(bestAction(b, unit, nodes, rules, anyFoe), support);
     }
     if (plan) execute(b, unit, plan, rules, rng, events);
     unit.acted = true;
@@ -533,9 +711,15 @@ export function aiAct(b, unit, rules, rng = Math.random) {
     return events;
 }
 
+/**
+ * 某阵营阶段开始：
+ * 1. 该阵营单位：记录阶段开始位置、地形回复、持续恢复 / 中毒、技能冷却 -1
+ * 2. 由该阵营施加的持续效果：剩余回合 -1，归零则结束
+ */
 function startTurnEffects(b, side) {
     const events = [];
     for (const u of alive(b).filter(x => x.side === side)) {
+        u.phaseX = u.x; u.phaseY = u.y;
         const t = terrainAt(b, u.x, u.y);
         const pct = Number(t.healPct) || 0;
         if (pct > 0 && u.hp < u.maxHp && !u.object) {
@@ -544,6 +728,27 @@ function startTurnEffects(b, side) {
             u.hp += amount;
             events.push({ type: 'terrainHeal', turn: b.turn, actor: ref(u), terrain: t.name, heal: amount, hpBefore: before, hpAfter: u.hp });
         }
+        for (const st of u.statuses || []) {
+            const v = Math.max(1, Math.round(u.maxHp * (Number(st.value) || 0) / 100));
+            const before = u.hp;
+            if (st.type === 'regen' && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + v);
+            else if (st.type === 'poison' && u.hp > 1) u.hp = Math.max(1, u.hp - v);
+            else continue;
+            events.push({ type: 'dot', turn: b.turn, actor: ref(u), effect: st.type, label: EFFECTS[st.type].name, hpBefore: before, hpAfter: u.hp });
+        }
+        for (const sk of u.skills || []) if (sk.cdLeft > 0) sk.cdLeft -= 1;
+    }
+    for (const u of alive(b)) {
+        if (!u.statuses?.length) continue;
+        const ended = [];
+        u.statuses = u.statuses.filter(st => {
+            if (st.srcSide !== side) return true;
+            st.turns -= 1;
+            if (st.turns > 0) return true;
+            ended.push(effectLabel(st));
+            return false;
+        });
+        if (ended.length) events.push({ type: 'statusEnd', turn: b.turn, actor: ref(u), effects: ended });
     }
     return events;
 }
@@ -597,10 +802,13 @@ export function endPlayerPhase(b, rules, rng = Math.random) {
     if (b.result) return events;
     for (const side of ['enemy', 'ally']) {
         const group = alive(b).filter(u => u.side === side && !u.object);
-        if (!group.length) continue;
-        b.phase = side;
-        events.push({ type: 'phase', turn: b.turn, phase: side });
-        events.push(...startTurnEffects(b, side));
+        // 即使该阵营没有单位，也要结算它施加的持续效果
+        const effects = startTurnEffects(b, side);
+        if (group.length) {
+            b.phase = side;
+            events.push({ type: 'phase', turn: b.turn, phase: side });
+        }
+        events.push(...effects);
         for (const u of group) {
             u.moved = false; u.acted = false;
             events.push(...aiAct(b, u, rules, rng));
@@ -646,7 +854,9 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         ai: object ? 'stationary' : d.ai || 'aggressive',
         object,
         keyTarget: !!d.keyTarget,
-        skills: object ? [] : (d.skills || []).map(s => ({ ...structuredClone(s), usesLeft: Number(s.uses) || 0 })),
+        skills: object ? [] : (d.skills || []).map(s => ({ ...normalizeSkill(structuredClone(s)), usesLeft: Number(s.uses) || 0, cdLeft: 0 })),
+        statuses: [],
+        phaseX: x, phaseY: y,
         wb: d.wb ? structuredClone(d.wb) : null,
         notes: d.notes || '',
         moved: false, acted: false,

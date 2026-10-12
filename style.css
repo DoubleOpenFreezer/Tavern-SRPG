@@ -81,7 +81,8 @@
 .tsrpg-hint { font-size: 0.75em; color: var(--tsrpg-muted); }
 .tsrpg-check { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; cursor: pointer; }
 .tsrpg-checks { display: flex; flex-wrap: wrap; }
-.tsrpg-grid2, .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid6 { display: grid; gap: 4px 10px; }
+.tsrpg-grid2, .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5, .tsrpg-grid6 { display: grid; gap: 4px 10px; }
+.tsrpg-grid5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .tsrpg-grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .tsrpg-grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .tsrpg-grid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -142,6 +143,14 @@
 .tsrpg-token.acted { filter: grayscale(0.85) brightness(0.75); }
 .tsrpg-token.object { border-radius: 3px; width: 88%; height: 88%; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.6), inset 0 0 0 2px rgba(0, 0, 0, 0.35); }
 .tsrpg-token.object.acted { filter: none; }
+.tsrpg-status { position: absolute; top: -6px; left: -6px; display: flex; gap: 1px; font-size: 10px; line-height: 1; padding: 1px 2px; border-radius: 4px; background: rgba(0, 0, 0, 0.75); color: #fff; }
+.tsrpg-status .up { color: #69f0ae; }
+.tsrpg-status .down { color: #ff5252; }
+.tsrpg-statuses { display: flex; flex-wrap: wrap; gap: 3px; }
+.tsrpg-chip { font-size: 0.75em; padding: 1px 6px; border-radius: 8px; background: rgba(76, 175, 80, 0.25); border: 1px solid rgba(105, 240, 174, 0.6); }
+.tsrpg-chip.debuff { background: rgba(229, 57, 53, 0.25); border-color: rgba(255, 82, 82, 0.6); }
+.tsrpg-stats b.up { color: #69f0ae; }
+.tsrpg-stats b.down { color: #ff5252; }
 .tsrpg-key { position: absolute; top: -7px; right: -7px; font-size: 13px; color: #ffd54f; text-shadow: 0 0 3px #000, 0 0 2px #000; }
 .tsrpg-token.selected { box-shadow: 0 0 0 3px #fff, 0 0 12px 3px var(--tsrpg-accent); }
 .tsrpg-token-icon { line-height: 1; }
@@ -190,6 +199,12 @@
 .tsrpg-form { flex: 1; min-width: 0; }
 .tsrpg-form-title { font-size: 1.1em; }
 .tsrpg-skill { border: 1px solid var(--tsrpg-border); border-radius: 6px; padding: 4px 8px; margin: 6px 0; }
+.tsrpg-effect { display: grid; grid-template-columns: minmax(130px, 1.3fr) minmax(90px, 1fr) minmax(80px, 0.8fr) 2fr auto; gap: 6px; align-items: center; margin: 3px 0; }
+.tsrpg-effect .text_pole { margin: 0; }
+.tsrpg-inline { display: flex; align-items: center; gap: 4px; }
+.tsrpg-inline .text_pole { width: 70px; flex: none; }
+.tsrpg-inline small { white-space: nowrap; color: var(--tsrpg-muted); }
+.tsrpg-effect-help { font-size: 0.75em; }
 .tsrpg-swatch { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; font-size: 13px; flex: none; border: 1px solid rgba(0, 0, 0, 0.4); }
 .tsrpg-toolbar { margin-top: 10px; }
 .tsrpg-palette { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
@@ -207,7 +222,9 @@
     .tsrpg-panel { inset: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; resize: none; }
     .tsrpg-battle, .tsrpg-editor { flex-direction: column; }
     .tsrpg-side, .tsrpg-list { flex: none; width: 100%; position: static; }
-    .tsrpg-grid3, .tsrpg-grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .tsrpg-grid6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .tsrpg-tab span { display: none; }
+    .tsrpg-effect { grid-template-columns: 1fr 1fr; }
+    .tsrpg-effect-help { display: none; }
 }

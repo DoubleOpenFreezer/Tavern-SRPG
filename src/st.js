@@ -1,5 +1,6 @@
 // SillyTavern 适配层：设置、聊天元数据、世界书、发送消息、提示词注入
 import { MODULE_NAME, META_KEY, defaultSettings } from './defaults.js';
+import { normalizeSkill } from './engine.js';
 
 export const ctx = () => SillyTavern.getContext();
 
@@ -18,7 +19,13 @@ function mergeDefaults(target, defs) {
 export function getSettings() {
     const all = ctx().extensionSettings;
     if (!all[MODULE_NAME]) all[MODULE_NAME] = defaultSettings();
-    else mergeDefaults(all[MODULE_NAME], defaultSettings());
+    else if (!all[MODULE_NAME]._merged) {
+        mergeDefaults(all[MODULE_NAME], defaultSettings());
+        // 旧版技能（kind: 'heal'、无冷却 / 效果字段）升级为新格式
+        for (const u of all[MODULE_NAME].units || []) (u.skills || []).forEach(normalizeSkill);
+        all[MODULE_NAME].version = 2;
+        Object.defineProperty(all[MODULE_NAME], '_merged', { value: true, enumerable: false });
+    }
     return all[MODULE_NAME];
 }
 

@@ -1,12 +1,13 @@
 // 单位 / 地形 / 地图 编辑器
 import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast } from './dom.js';
 import { makeUnit, makeSkill, makeMap, makeWave, uid } from '../defaults.js';
-import { MISSION_NAMES } from '../engine.js';
+import { MISSION_NAMES, EFFECTS, normalizeSkill } from '../engine.js';
 import * as ST from '../st.js';
 
 const SIDES = [['player', '我方'], ['ally', '友军'], ['enemy', '敌方']];
 const AIS = [['aggressive', '主动出击（会接近目标）'], ['defensive', '原地迎击（只攻击可触及的目标）'], ['stationary', '固守不动（不移动）']];
-const KINDS = [['physical', '物理（ATK vs DEF）'], ['magical', '魔法（MATK vs MDEF）'], ['heal', '治疗（基于 MATK）']];
+const KINDS = [['physical', '物理伤害（ATK vs DEF）'], ['magical', '魔法伤害（MATK vs MDEF）'], ['support', '辅助（治疗 / 增益 / 减益）']];
+const TARGETS = [['ally', '友方（含自己）'], ['enemy', '敌方'], ['self', '仅自己']];
 
 export function newEditorUi() {
     return { unitId: null, terrainId: null, mapId: null, tool: 'paint', brush: 'plain', placeUnit: null, wbBook: null };
@@ -108,19 +109,69 @@ function unitForm(app, u) {
     );
 }
 
+/** 预设效果下拉框（按 立即 / 增益 / 减益 分组），效果类型只能从预设中选择 */
+function effectSelect(value, onchange) {
+    const groups = {};
+    for (const [id, def] of Object.entries(EFFECTS)) (groups[def.group] ||= []).push([id, def.name]);
+    const el = h('select.text_pole', { onchange: e => onchange(e.target.value) },
+        Object.entries(groups).map(([g, opts]) => h('optgroup', { label: g }, opts.map(([id, name]) => h('option', { value: id }, name)))));
+    el.value = value;
+    return el;
+}
+
+function effectRow(app, sk, e) {
+    const def = EFFECTS[e.type] || {};
+    const save = () => { app.save(); };
+    return h('div.tsrpg-effect',
+        effectSelect(e.type, v => {
+            // 换类型时套用该预设的默认数值
+            e.type = v;
+            e.value = EFFECTS[v].value ?? 0;
+            e.turns = EFFECTS[v].instant ? 0 : (e.turns || 2);
+            app.save(); app.render();
+        }),
+        def.noValue ? h('span.tsrpg-muted', '—') : h('label.tsrpg-inline',
+            numInput(e.value, v => { e.value = v; save(); }, { min: e.type === 'taunt' ? 0 : 1 }), h('small', def.unit || '')),
+        def.instant ? h('small.tsrpg-muted', '立即生效') : h('label.tsrpg-inline',
+            numInput(e.turns, v => { e.turns = Math.max(1, v); save(); }, { min: 1 }), h('small', '回合')),
+        h('small.tsrpg-muted.tsrpg-effect-help', def.help || ''),
+        button('', () => { sk.effects.splice(sk.effects.indexOf(e), 1); app.save(); app.render(); }, { icon: 'fa-xmark', cls: 'danger', title: '移除效果' }),
+    );
+}
+
 function skillForm(app, u, sk) {
-    const set = k => v => { sk[k] = v; app.save(); };
+    normalizeSkill(sk);
+    const set = (k, rerender = false) => v => { sk[k] = v; app.save(); if (rerender) app.render(); };
+    const support = sk.kind === 'support';
+    const self = support && sk.target === 'self';
     return h('div.tsrpg-skill',
         h('div.tsrpg-grid3',
             field('技能名', textInput(sk.name, set('name'))),
-            field('类型', select(KINDS, sk.kind, set('kind'))),
-            field('威力 %', numInput(sk.power, set('power'), { min: 0, step: 10 })),
+            field('类型', select(KINDS, sk.kind, v => {
+                sk.kind = v;
+                sk.target = v === 'support' ? 'ally' : 'enemy';
+                app.save(); app.render();
+            })),
+            support
+                ? field('作用对象', select(TARGETS, sk.target, set('target', true)))
+                : field('威力 %', numInput(sk.power, set('power'), { min: 0, step: 10 })),
         ),
-        h('div.tsrpg-grid4',
-            field('射程最小', numInput(sk.rangeMin, set('rangeMin'), { min: 0 })),
-            field('射程最大', numInput(sk.rangeMax, set('rangeMax'), { min: 0 })),
-            field('范围半径', numInput(sk.radius, set('radius'), { min: 0 }), '0＝单体'),
-            field('次数', numInput(sk.uses, set('uses'), { min: 0 }), '0＝无限'),
+        h('div.tsrpg-grid5',
+            self ? null : field('射程最小', numInput(sk.rangeMin, set('rangeMin'), { min: 0 }), '0＝可以对自己所在格使用'),
+            self ? null : field('射程最大', numInput(sk.rangeMax, set('rangeMax'), { min: 0 })),
+            self ? null : field('范围半径', numInput(sk.radius, set('radius'), { min: 0 }), '0＝单体'),
+            field('冷却回合', numInput(sk.cooldown, set('cooldown'), { min: 0 }), '每 N 回合可用一次；0 或 1＝每回合可用'),
+            field('次数', numInput(sk.uses, set('uses'), { min: 0 }), '每场战斗；0＝无限'),
+        ),
+        h('div.tsrpg-label', support ? '效果' : '附加效果（命中且未被击败的目标获得）'),
+        sk.effects.map(e => effectRow(app, sk, e)),
+        h('div.tsrpg-row',
+            button('添加效果', () => {
+                const type = support ? (sk.target === 'enemy' ? 'atk_down' : 'heal') : 'def_down';
+                sk.effects.push({ type, value: EFFECTS[type].value, turns: EFFECTS[type].instant ? 0 : 2 });
+                app.save(); app.render();
+            }, { icon: 'fa-plus' }),
+            support && !sk.effects.length ? h('small.tsrpg-warn', '辅助技能至少需要一个效果') : null,
         ),
         h('div.tsrpg-row',
             textInput(sk.desc, set('desc'), '技能描述（会告诉 LLM，用于描写）'),
