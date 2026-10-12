@@ -1,10 +1,11 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
-import { h, add, clear, toast, button, select, renderBoard, textArea, textDialog } from './dom.js';
+import { h, add, clear, toast, button, select, renderBoard, textArea, textDialog, field, numInput, checkbox } from './dom.js';
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
 import { runAiPhases, previewProposals, acceptProposals, rejectProposals } from './llm-flow.js';
 import { COMMANDS } from '../commands.js';
+import { applyManualChange } from '../manual.js';
 
 const PHASE = { player: '我方阶段', enemy: '敌方阶段', ally: '友军阶段' };
 const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动' };
@@ -12,7 +13,7 @@ const KIND = { physical: '物理', magical: '魔法', support: '辅助' };
 
 /** 战场交互状态（不持久化） */
 export function newBattleUi() {
-    return { sel: null, mode: 'idle', skillId: null, hover: null, undo: [], note: '', setupMap: null, showLog: false, busy: null, keep: null };
+    return { sel: null, mode: 'idle', skillId: null, hover: null, undo: [], note: '', setupMap: null, showLog: false, busy: null, keep: null, cheat: false, cheatTool: 'edit', cheatDef: null, cheatTerrain: null };
 }
 
 export function renderBattleTab(app, root) {
@@ -193,13 +194,24 @@ function onCell(app, b, x, y) {
     const at = E.unitAt(b, x, y);
     const key = `${x},${y}`;
 
+    if (ui.cheat) {
+        if (ui.cheatTool === 'spawn') manualChange(app, b, { type: 'spawn', defId: ui.cheatDef, x, y });
+        else if (ui.cheatTool === 'terrain') manualChange(app, b, { type: 'terrain', terrainId: ui.cheatTerrain, x, y });
+        else if (ui.cheatTool === 'remove' && at) manualChange(app, b, { type: 'remove', uid: at.uid });
+        else if (ui.cheatTool === 'move' && u) manualChange(app, b, { type: 'move', uid: u.uid, x, y });
+        else { ui.sel = at?.uid || null; app.render(); }
+        return;
+    }
+
     if (ui.mode === 'move' && u) {
         const reach = E.reachable(b, u);
         if (reach.has(key)) {
             pushUndo(app, b);
             const ev = E.doMove(b, u, x, y);
             if (ev) b.pending.push(ev);
-            ui.mode = 'action';
+            b.pending.push(...E.commit(b, null));
+            ui.mode = u.hp > 0 && !b.result ? 'action' : 'idle';
+            if (u.hp <= 0) ui.sel = null;
             ST.saveBattle();
             app.updateInjection();
             app.render();
@@ -384,7 +396,7 @@ function renderActive(app, root, b) {
     const ui = app.bs;
     if (syncBindings(app, b)) app.updateInjection();
     const u = selUnit(b, ui);
-    if (u && u.hp <= 0) { ui.sel = null; ui.mode = 'idle'; }
+    if (u && u.hp <= 0 && !ui.cheat) { ui.sel = null; ui.mode = 'idle'; }
 
     const status = b.result
         ? h(`span.tsrpg-result.${b.result}`, b.result === 'victory' ? '胜利' : '战败')
@@ -409,17 +421,21 @@ function renderActive(app, root, b) {
         add(root,
             h('div.tsrpg-row.tsrpg-topbar', h('b', `第 ${b.turn} 回合`), status,
                 button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length }),
-                button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy })),
+                button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
+                quietTurnButton(app, b)),
             h('div.tsrpg-board-wrap', refs.board),
             ui.busy ? h('div.tsrpg-busy', ui.busy) : null,
             u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.acted ? ' · 已行动' : ''}`) : null,
-            actionPanel(app, b, u),
+            ui.cheat ? manualPanel(app, b) : actionPanel(app, b, u),
             refs.preview,
             h('div.tsrpg-row',
                 button('发送行动', () => dispatch(app, b), { icon: 'fa-paper-plane', disabled: !!ui.busy || (!b.pending.length && !ui.note.trim()) }),
                 b.llm?.proposals ? button('处理剧情提议', () => { app.setLayout('float'); app.setTab('battle'); }, { icon: 'fa-scroll' }) : null,
-                button('取消选择', () => { ui.sel = null; ui.mode = 'idle'; app.render(); }, { disabled: !ui.sel }),
-                button('结束战斗', () => endBattle(app), { icon: 'fa-flag-checkered', disabled: !!ui.busy })),
+                button('取消选择', () => { ui.sel = null; ui.mode = 'idle'; app.render(); }, { disabled: !ui.sel })),
+            manualToggle(app),
+            h('details.tsrpg-battle-management',
+                h('summary', '战斗管理'),
+                button('结束战斗', () => endBattle(app), { icon: 'fa-flag-checkered', cls: 'danger', disabled: !!ui.busy })),
         );
         return;
     }
@@ -441,6 +457,8 @@ function renderActive(app, root, b) {
             h('div.tsrpg-spacer'),
             button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length, title: '撤销上一步操作' }),
             button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
+            quietTurnButton(app, b),
+            manualToggle(app),
             button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
             button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
         ),
@@ -453,7 +471,7 @@ function renderActive(app, root, b) {
                 ui.busy ? h('div.tsrpg-busy', h('i.fa-solid.fa-spinner.fa-spin'), ` ${ui.busy}`) : null,
                 proposalPanel(app, b),
                 u ? unitCard(b, u) : h('div.tsrpg-muted', '点击我方单位选择，右键取消。红色区域为可攻击范围。'),
-                actionPanel(app, b, u),
+                ui.cheat ? manualPanel(app, b) : actionPanel(app, b, u),
                 refs.preview,
                 refs.hoverInfo,
                 h('div.tsrpg-section-title', '待发送的行动', h('small.tsrpg-muted', '（灰色＝按设置不描写）')),
@@ -471,13 +489,67 @@ function renderActive(app, root, b) {
     );
 }
 
-async function endTurn(app, b) {
+function quietTurnButton(app, b) {
+    return button('仅结算回合', () => endTurn(app, b, true), { icon: 'fa-forward-step', disabled: !!b.result || b.phase !== 'player' || !!app.bs.busy, title: '只用内置AI结算，不调用LLM，也不发送提示词；行动保留，可稍后手动发送' });
+}
+
+function manualToggle(app) {
+    return button(app.bs.cheat ? '退出手动修改' : '手动修改', () => {
+        app.bs.cheat = !app.bs.cheat;
+        app.bs.mode = 'idle'; app.bs.sel = null;
+        app.render();
+    }, { icon: 'fa-wrench', cls: app.bs.cheat ? 'active' : '', disabled: !!app.bs.busy });
+}
+
+function manualChange(app, b, change) {
+    if (app.bs.busy || ST.getBattle() !== b) return;
+    pushUndo(app, b);
+    try {
+        const events = applyManualChange(b, change, app.data);
+        b.pending.push(...events);
+        ST.saveBattle(); app.updateInjection(); app.render();
+    } catch (err) {
+        app.bs.undo.pop();
+        toast('warning', err.message || String(err));
+        app.render();
+    }
+}
+
+function manualPanel(app, b) {
+    const ui = app.bs;
+    const u = E.getUnit(b, ui.sel);
+    if (!app.data.units.some(d => d.id === ui.cheatDef)) ui.cheatDef = app.data.units[0]?.id || null;
+    if (!app.data.terrains.some(t => t.id === ui.cheatTerrain)) ui.cheatTerrain = app.data.terrains[0]?.id || null;
+    const tools = [['edit', '选中 / 改数值'], ['spawn', '放置单位'], ['remove', '撤除单位'], ['move', '移动所选单位'], ['terrain', '改地形']];
+    const hints = { edit: '点击棋子或下拉选择单位，修改立即生效。', spawn: '选择单位类型，然后点击空格放置。', remove: '点击棋子撤除，可用顶部「撤销」恢复。', move: '先选择单位，再点击空格移动，不消耗行动。', terrain: '选择地形，然后点击格子替换。' };
+    return h('div.tsrpg-manual-panel',
+        h('b', '手动修改（仅当前战斗）'),
+        h('div.tsrpg-row', select(tools, ui.cheatTool, v => { ui.cheatTool = v; app.render(); })),
+        h('small.tsrpg-muted', hints[ui.cheatTool]),
+        ui.cheatTool === 'spawn' ? field('单位类型', select(app.data.units.map(d => [d.id, `${d.name} · ${E.SIDE_NAMES[d.side]}`]), ui.cheatDef, v => { ui.cheatDef = v; })) : null,
+        ui.cheatTool === 'terrain' ? field('地形', select(app.data.terrains.map(t => [t.id, t.name]), ui.cheatTerrain, v => { ui.cheatTerrain = v; })) : null,
+        field('所选单位', select([['', '— 选择单位 —'], ...b.units.map(unit => [unit.uid, `${unit.name} · ${E.SIDE_NAMES[unit.side]}${unit.retreated ? '（已撤除）' : unit.hp <= 0 ? '（倒下）' : ''}`])], ui.sel || '', v => { ui.sel = v || null; app.render(); })),
+        u ? [
+            h('div.tsrpg-grid3',
+                [['hp', '当前HP'], ['maxHp', '最大HP'], ['atk', 'ATK'], ['matk', 'MATK'], ['def', 'DEF'], ['mdef', 'MDEF'], ['agi', 'AGI'], ['mov', 'MOV'], ['rangeMin', '最小射程'], ['rangeMax', '最大射程']].map(([key, label]) => field(label, numInput(u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value }), { min: key === 'maxHp' ? 1 : 0 })))),
+            field('阵营', select(Object.entries(E.SIDE_NAMES), u.side, value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'side', value }))),
+            h('div.tsrpg-row', ['flying', 'acted', 'keyTarget'].map((key, i) => checkbox(['飞行', '已行动', '关键目标'][i], u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value })))),
+            h('div.tsrpg-row',
+                button('满血 / 重置行动技能', () => manualChange(app, b, { type: 'restore', uid: u.uid }), { icon: 'fa-heart' }),
+                button('撤除所选单位', () => manualChange(app, b, { type: 'remove', uid: u.uid }), { cls: 'danger' })),
+        ] : null,
+        button('击败场上全部敌人', () => manualChange(app, b, { type: 'defeatEnemies' }), { cls: 'danger' }),
+        h('small.tsrpg-muted', '可撤销；资料卡不受影响。修改会保存在战斗中，并在下一次发送行动时附带说明。'),
+    );
+}
+
+async function endTurn(app, b, quiet = false) {
     if (app.bs.busy) return;
     const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted && !E.isStunned(x)).length;
     if (left && !confirm(`还有 ${left} 个我方单位未行动，确定结束回合吗？`)) return;
     const s = app.settings;
     let events;
-    if (E.AI_SIDES.some(side => s.llm.commander[side])) {
+    if (!quiet && E.AI_SIDES.some(side => s.llm.commander[side])) {
         // 有阵营由 LLM 指挥：异步结算，期间锁定棋盘
         const before = structuredClone(b);
         app.bs.busy = '敌方回合结算中……';
@@ -503,7 +575,7 @@ async function endTurn(app, b) {
     app.updateInjection();
     if (b.result) toast(b.result === 'victory' ? 'success' : 'error', b.result === 'victory' ? '战斗胜利！' : '战斗失败……');
     app.render();
-    if (app.settings.send.autoOnEndTurn) dispatch(app, b);
+    if (!quiet && app.settings.send.autoOnEndTurn) dispatch(app, b);
 }
 
 /** LLM 在回复里提议的战场变化，等待确认 */
@@ -532,11 +604,38 @@ function proposalPanel(app, b) {
 }
 
 function endBattle(app) {
-    if (!confirm('结束当前战斗？棋盘状态将被清除（聊天记录不受影响）。')) return;
-    ST.setBattle(null);
-    app.bs = newBattleUi();
-    app.updateInjection();
-    app.render();
+    const battle = ST.getBattle();
+    if (!battle || app.bs.busy || app.endBattleDialog) return;
+    const dismiss = () => {
+        overlay.remove();
+        app.endBattleDialog = null;
+    };
+    const cancel = button('继续战斗', dismiss, { cls: 'primary' });
+    const confirmEnd = button('确认结束战斗', () => {
+        dismiss();
+        // 聊天切换或异步结算后，旧确认框不能清除新战斗。
+        if (ST.getBattle() !== battle || app.bs.busy) return;
+        ST.setBattle(null);
+        app.bs = newBattleUi();
+        app.updateInjection();
+        app.render();
+    }, { icon: 'fa-flag-checkered', cls: 'danger' });
+    const overlay = h('div.tsrpg-overlay', {
+        onclick: e => { if (e.target === overlay) dismiss(); },
+        onkeydown: e => {
+            if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                (document.activeElement === cancel ? confirmEnd : cancel).focus();
+            }
+        },
+    }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认结束战斗' },
+        h('div.tsrpg-section-title', '结束当前战斗？'),
+        h('p', `「${battle.mapName}」第 ${battle.turn} 回合的棋盘进度和未发送行动将被清除，聊天记录会保留。`),
+        h('div.tsrpg-row.tsrpg-end-battle-buttons', cancel, confirmEnd)));
+    app.endBattleDialog = overlay;
+    app.panel.append(overlay);
+    cancel.focus();
 }
 
 // ---------------------------------------------------------------- 发送

@@ -141,7 +141,7 @@ export function renderBoard(o) {
             const key = `${x},${y}`;
             const cell = h('div.tsrpg-cell', {
                 'data-x': x, 'data-y': y,
-                title: `(${x + 1},${y + 1}) ${t.name}`,
+                title: `(${x + 1},${y + 1}) ${t.name}${Number(t.enterDamage) || Number(t.enterDamagePct) ? ` · 落脚伤害 ${Number(t.enterDamage) || 0} + ${Number(t.enterDamagePct) || 0}%最大HP` : ''}${Number(t.turnDamage) || Number(t.turnDamagePct) ? ` · 回合伤害 ${Number(t.turnDamage) || 0} + ${Number(t.turnDamagePct) || 0}%最大HP` : ''}`,
                 style: { background: t.color, color: contrast(t.color) },
             }, t.symbol ? h('span.tsrpg-sym', t.symbol) : null);
             for (const m of o.marks?.get(key) || []) cell.classList.add(m);

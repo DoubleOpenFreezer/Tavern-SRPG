@@ -40,15 +40,16 @@ test('森林消耗 2 点移动力', () => {
 });
 
 test('减法公式 + 地形减伤 + 反击', () => {
+    const legacyRules = { ...S.rules, formula: 'subtract' };
     const b = mk();
     const [knight, , gob] = b.units;
     knight.x = 8; knight.y = 3; gob.x = 9; gob.y = 3;
-    const ev = E.doAttack(b, knight, gob, S.rules, fixed);
+    const ev = E.doAttack(b, knight, gob, legacyRules, fixed);
     assert.equal(ev.damage, 12 - 3);
     assert.equal(gob.hp, 18 - 9);
     assert.equal(ev.counter.damage, 1); // 9-9=0，取最低伤害 1
     gob.x = 8; gob.y = 6; knight.x = 7; knight.y = 6; gob.hp = 18; // 哥布林在森林
-    const ev2 = E.doAttack(b, knight, gob, S.rules, fixed);
+    const ev2 = E.doAttack(b, knight, gob, legacyRules, fixed);
     assert.equal(ev2.damage, Math.round(9 * 0.8));
 });
 

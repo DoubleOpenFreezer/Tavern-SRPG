@@ -20,7 +20,7 @@ export function eventCategory(e) {
         case 'move': case 'wait': return 'move';
         case 'attack': return 'attack';
         case 'skill': return 'skill';
-        case 'phase': case 'terrainHeal': case 'mission': return 'turn';
+        case 'phase': case 'terrainHeal': case 'terrainDamage': case 'mission': return 'turn';
         case 'reinforce': return 'reinforce';
         case 'dot': case 'statusEnd': case 'stunned': return 'status';
         case 'llm': return 'llm';
@@ -71,7 +71,11 @@ function formatEventBody(e) {
         case 'llm':
             return formatLlm(e);
         case 'move':
-            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。`;
+            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+        case 'manual':
+            return `【手动修改】${e.text}`;
+        case 'terrainDamage':
+            return `${who(e.actor)} ${e.timing === 'turn' ? '回合开始时' : '落脚时'}受到${e.terrain}伤害，损失 ${e.damage} 点生命（${hpChange(e)}）${e.killed ? '，被击败' : ''}。`;
         case 'wait':
             return `${who(e.actor)} 在${e.terrain}原地待命。`;
         case 'attack': {

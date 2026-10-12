@@ -69,6 +69,9 @@ function terrainTraits(t) {
     if (Number(t.defBonus)) bits.push(`减伤${t.defBonus}%`);
     if (Number(t.avoid)) bits.push(`闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%`);
     if (Number(t.healPct)) bits.push(`每回合回复${t.healPct}%`);
+    if (Number(t.enterDamage) || Number(t.enterDamagePct)) bits.push(`落脚伤害${Number(t.enterDamage) || 0} + 最大HP的${Number(t.enterDamagePct) || 0}%`);
+    if (Number(t.turnDamage) || Number(t.turnDamagePct)) bits.push(`阵营回合开始伤害${Number(t.turnDamage) || 0} + 最大HP的${Number(t.turnDamagePct) || 0}%`);
+    if (Number(t.enterDamage) || Number(t.enterDamagePct) || Number(t.turnDamage) || Number(t.turnDamagePct)) bits.push(t.damageFlying ? '飞行也受伤' : '飞行免疫地形伤害');
     return bits.join('，');
 }
 

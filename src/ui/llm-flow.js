@@ -168,6 +168,7 @@ export async function runAiPhases(app, b) {
         if (b.result) break;
         const { events: ev, group } = E.beginSidePhase(b, side);
         events.push(...ev);
+        if (b.result) break;
         if (!group.length) continue;
         let picks = new Map(), options = new Map();
         if (s.llm.commander[side]) {

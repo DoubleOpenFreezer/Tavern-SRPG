@@ -1,4 +1,23 @@
 /* Tavern-SRPG */
+.tsrpg-chat-report {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-left: 3px solid var(--SmartThemeQuoteColor, #e18a24);
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(23, 23, 23, 0.6));
+    overflow: hidden;
+}
+.tsrpg-chat-report > summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    color: var(--SmartThemeBodyColor, #ddd);
+    font-weight: bold;
+    overflow-wrap: anywhere;
+}
+.tsrpg-chat-report-hint { margin-left: 10px; font-weight: normal; opacity: 0.6; font-size: 0.75em; }
+.tsrpg-chat-report-content { padding: 8px 12px; border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2)); }
+.tsrpg-chat-report-content > :first-child { margin-top: 0; }
+.tsrpg-chat-report-content > :last-child { margin-bottom: 0; }
+
 .tsrpg-panel {
     --tsrpg-bg: var(--SmartThemeBlurTintColor, rgba(23, 23, 23, 0.95));
     --tsrpg-fg: var(--SmartThemeBodyColor, #ddd);
@@ -38,6 +57,11 @@
 .tsrpg-panel.compact .tsrpg-body { flex: 0 1 auto; min-height: 0; padding: 8px; }
 .tsrpg-panel.compact .tsrpg-board-wrap { max-width: 100%; margin: 0 auto; }
 .tsrpg-panel.compact .tsrpg-actions { margin: 6px 0; }
+.tsrpg-battle-management { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--tsrpg-border); }
+.tsrpg-battle-management > summary { cursor: pointer; color: var(--tsrpg-muted); font-size: 0.85em; }
+.tsrpg-battle-management > .tsrpg-btn { margin-top: 8px; }
+.tsrpg-end-battle-buttons { justify-content: space-between; gap: 16px; }
+.tsrpg-manual-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--tsrpg-accent); border-radius: 6px; margin: 6px 0; }
 
 /* 自由浮动窗口 */
 .tsrpg-panel.float {

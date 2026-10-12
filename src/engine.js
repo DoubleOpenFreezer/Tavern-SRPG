@@ -275,7 +275,11 @@ export function calcDamage(b, attacker, defender, kind, power, rules, rng = Math
     const atk = stat(attacker, kind === 'magical' ? 'matk' : 'atk') * (power / 100);
     const def = stat(defender, kind === 'magical' ? 'mdef' : 'def');
     let dmg;
-    if (rules.formula === 'ratio') {
+    if (rules.formula === 'diminishing') {
+        // 防御只影响减伤比例；技能倍率线性作用于最终伤害。
+        const scale = Math.max(1, Number(rules.defenseScale) || 12);
+        dmg = Math.max(0, atk) * scale / (scale + Math.max(0, def));
+    } else if (rules.formula === 'ratio') {
         dmg = atk <= 0 ? 0 : (atk * atk) / (atk + Math.max(0, def));
     } else {
         dmg = atk - def;
@@ -335,6 +339,20 @@ function canCounter(b, defender, attacker) {
 
 // ---------------------------------------------------------------- 行动
 
+/** 地形伤害不受防御减免，可致死；飞行单位默认免疫。 */
+export function terrainDamage(b, unit, timing = 'enter') {
+    const t = terrainAt(b, unit.x, unit.y);
+    if (unit.hp <= 0 || unit.object || (unit.flying && !t.damageFlying)) return null;
+    const fixed = Math.max(0, Number(t[`${timing}Damage`]) || 0);
+    const pct = Math.max(0, Number(t[`${timing}DamagePct`]) || 0);
+    const amount = Math.floor(fixed) + (pct > 0 ? Math.max(1, Math.round(unit.maxHp * pct / 100)) : 0);
+    if (!amount) return null;
+    const before = unit.hp;
+    unit.hp = Math.max(0, unit.hp - amount);
+    if (!unit.hp) unit.acted = true;
+    return { type: 'terrainDamage', turn: b.turn, actor: ref(unit), timing, terrain: t.name, damage: before - unit.hp, hpBefore: before, hpAfter: unit.hp, killed: !unit.hp };
+}
+
 export function doMove(b, unit, x, y) {
     const reach = reachable(b, unit);
     const node = reach.get(`${x},${y}`);
@@ -348,6 +366,7 @@ export function doMove(b, unit, x, y) {
         from, to: { x, y },
         terrain: terrainAt(b, x, y).name,
         fromTerrain: terrainAt(b, from.x, from.y).name,
+        terrainDamage: terrainDamage(b, unit),
     };
 }
 
@@ -698,6 +717,7 @@ function fieldDist(b, field, t) {
 function execute(b, unit, plan, rules, rng, events) {
     const mv = doMove(b, unit, plan.x, plan.y);
     if (mv) events.push(mv);
+    if (unit.hp <= 0) return;
     if (plan.kind === 'attack') events.push(doAttack(b, unit, plan.target, rules, rng));
     else events.push(doSkill(b, unit, plan.skill, plan.tx, plan.ty, rules, rng));
 }
@@ -758,7 +778,7 @@ export function aiAct(b, unit, rules, rng = Math.random) {
     } else {
         plan = better(bestAction(b, unit, nodes, rules, anyFoe), support);
     }
-    if (plan) execute(b, unit, plan, rules, rng, events);
+    if (plan && unit.hp > 0) execute(b, unit, plan, rules, rng, events);
     unit.acted = true;
     finish(b, events);
     return events;
@@ -774,6 +794,9 @@ function startTurnEffects(b, side) {
     for (const u of alive(b).filter(x => x.side === side)) {
         u.phaseX = u.x; u.phaseY = u.y;
         const t = terrainAt(b, u.x, u.y);
+        const damage = terrainDamage(b, u, 'turn');
+        if (damage) events.push(damage);
+        if (u.hp <= 0) continue;
         const pct = Number(t.healPct) || 0;
         if (pct > 0 && u.hp < u.maxHp && !u.object) {
             const amount = Math.min(u.maxHp - u.hp, Math.max(1, Math.round(u.maxHp * pct / 100)));
@@ -864,6 +887,7 @@ export function beginSidePhase(b, side) {
         events.push({ type: 'phase', turn: b.turn, phase: side });
     }
     events.push(...effects);
+    finish(b, events);
     for (const u of group) { u.moved = false; u.acted = false; }
     return { events, group };
 }
@@ -891,6 +915,7 @@ export function endPlayerPhase(b, rules, rng = Math.random) {
     for (const side of AI_SIDES) {
         const { events: ev, group } = beginSidePhase(b, side);
         events.push(...ev);
+        if (b.result) return events;
         for (const u of group) {
             if (u.hp <= 0 || u.retreated) continue;
             events.push(...aiAct(b, u, rules, rng));
@@ -974,6 +999,10 @@ export function actWithPlan(b, unit, plan, rules, rng = Math.random) {
     const events = [];
     const mv = doMove(b, unit, plan.x, plan.y);
     if (mv) events.push(mv);
+    if (unit.hp <= 0) {
+        finish(b, events);
+        return { events, usedPlan: true };
+    }
     if (plan.kind === 'attack') events.push(doAttack(b, unit, getUnit(b, plan.target.uid), rules, rng));
     else if (plan.kind === 'skill') events.push(doSkill(b, unit, unit.skills.find(x => x.id === plan.skill.id), plan.tx, plan.ty, rules, rng));
     else if (plan.kind === 'wait' && !mv) events.push(doWait(b, unit));

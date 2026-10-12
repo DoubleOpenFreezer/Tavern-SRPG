@@ -16,6 +16,7 @@ export const DEFAULT_TERRAINS = [
     { id: 'desert', name: '沙地', symbol: '∴', color: '#ffe082', moveCost: 2, passable: true, flyable: true, avoid: -10, defBonus: 0, healPct: 0, desc: '松软的沙地，拖慢行军，难以闪避' },
     { id: 'fort', name: '堡垒', symbol: '⌂', color: '#b0bec5', moveCost: 1, passable: true, flyable: true, avoid: 10, defBonus: 30, healPct: 10, desc: '坚固的据点，回合开始时恢复10%生命' },
     { id: 'wall', name: '城墙', symbol: '█', color: '#455a64', moveCost: 1, passable: false, flyable: false, avoid: 0, defBonus: 0, healPct: 0, desc: '高耸的石墙，任何单位都无法通过' },
+    { id: 'lava', name: '熔岩', symbol: '♨', color: '#e64a19', moveCost: 2, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, enterDamage: 5, enterDamagePct: 0, turnDamage: 0, turnDamagePct: 10, damageFlying: false, desc: '落脚时受到5点伤害；阵营回合开始时损失最大HP的10%，飞行单位免疫' },
 ];
 
 export function makeUnit(over = {}) {
@@ -171,7 +172,8 @@ export const DEFAULT_HEADER = '【SRPG 战斗系统】以下行动结果已由�
 
 export function defaultRules() {
     return {
-        formula: 'subtract', // subtract: 攻-防 ; ratio: 攻²/(攻+防)
+        formula: 'diminishing', // 攻 × 威力% × 防御基准/(防御基准+防)，保留 subtract / ratio
+        defenseScale: 12, // 防御等于此数值时减伤50%
         variance: 10, // 伤害浮动 ±%
         counter: true, // 普通攻击是否触发反击
         minDamage: 1,
@@ -214,7 +216,7 @@ export const PROFILE_KEYS = ['terrains', 'units', 'maps', 'rules'];
 
 export function defaultSettings() {
     return {
-        version: 4,
+        version: 5,
         profiles: [sampleProfile()],
         activeProfile: SAMPLE_PROFILE_ID,
         defaultProfile: SAMPLE_PROFILE_ID, // 没有绑定资料卡的聊天使用它

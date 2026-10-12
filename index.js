@@ -3,6 +3,7 @@ import { App } from './src/ui/panel.js';
 import { ctx, getBattle } from './src/st.js';
 import { registerMacros, registerTool } from './src/llm.js';
 import { handleMessage, revertMessage, handleDeleted } from './src/ui/llm-flow.js';
+import { installBattleMessageFolding } from './src/ui/chat-messages.js';
 
 const app = new App();
 window.TavernSRPG = app;
@@ -61,6 +62,7 @@ jQuery(async () => {
     addMenuButton();
     addSettingsDrawer();
     registerCommand();
+    installBattleMessageFolding();
     try {
         registerMacros(app);
         registerTool(app);

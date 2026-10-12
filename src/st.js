@@ -21,13 +21,23 @@ export function getSettings() {
     if (!all[MODULE_NAME]) all[MODULE_NAME] = defaultSettings();
     else if (!all[MODULE_NAME]._merged) {
         const st = all[MODULE_NAME];
+        const previousVersion = Number(st.version) || 0;
         migrateToProfiles(st);
         mergeDefaults(st, defaultSettings());
         for (const p of st.profiles) normalizeProfile(p);
-        st.version = 4;
+        if (previousVersion < 5) upgradeCombatRules(st);
+        st.version = 5;
         Object.defineProperty(st, '_merged', { value: true, enumerable: false });
     }
     return all[MODULE_NAME];
+}
+
+/** 旧默认减法公式升级；已经选择比例公式的资料卡保留。 */
+export function upgradeCombatRules(st) {
+    for (const p of st.profiles || []) {
+        if (p.rules?.formula === 'subtract') p.rules.formula = 'diminishing';
+        if (p.rules && p.rules.defenseScale == null) p.rules.defenseScale = 12;
+    }
 }
 
 /** v4 之前，单位 / 地形 / 地图 / 规则直接存在设置里：把它们打包成一张资料卡 */

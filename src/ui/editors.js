@@ -1,6 +1,6 @@
 // 单位 / 地形 / 地图 编辑器
 import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast } from './dom.js';
-import { makeUnit, makeSkill, makeMap, makeWave, uid } from '../defaults.js';
+import { makeUnit, makeSkill, makeMap, makeWave, uid, DEFAULT_TERRAINS } from '../defaults.js';
 import { MISSION_NAMES, EFFECTS, normalizeSkill } from '../engine.js';
 import * as ST from '../st.js';
 
@@ -276,6 +276,11 @@ export function renderTerrainsTab(app, root) {
             const t = { id: uid('ter'), name: '新地形', symbol: '', color: '#a1887f', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '' };
             app.data.terrains.push(t); ed.terrainId = t.id; app.save(); app.render();
         }, { icon: 'fa-plus' }),
+        button('添加熔岩', () => {
+            let lava = app.data.terrains.find(t => t.id === 'lava');
+            if (!lava) { lava = structuredClone(DEFAULT_TERRAINS.find(t => t.id === 'lava')); app.data.terrains.push(lava); app.save(); }
+            ed.terrainId = lava.id; app.render();
+        }, { icon: 'fa-fire' }),
         app.data.terrains.map(t => listItem(t.id === ed.terrainId, () => { ed.terrainId = t.id; app.render(); },
             h('span.tsrpg-swatch', { style: { background: t.color, color: contrast(t.color) } }, t.symbol || ''), h('span', t.name))),
     );
@@ -311,6 +316,15 @@ function terrainForm(app, t) {
             checkbox('步行可通过', t.passable, set('passable')),
             checkbox('飞行可通过', t.flyable, set('flyable')),
         ),
+        h('div.tsrpg-section-title', '地形伤害'),
+        h('div.tsrpg-grid4',
+            field('落脚扣血', numInput(t.enterDamage ?? 0, set('enterDamage'), { min: 0 }), '移动终点落在此格时扣除固定HP'),
+            field('落脚扣血 %', numInput(t.enterDamagePct ?? 0, set('enterDamagePct'), { min: 0, max: 100 }), '按最大HP计算，与固定伤害相加'),
+            field('回合扣血', numInput(t.turnDamage ?? 0, set('turnDamage'), { min: 0 }), '该单位所属阵营阶段开始时扣血'),
+            field('回合扣血 %', numInput(t.turnDamagePct ?? 0, set('turnDamagePct'), { min: 0, max: 100 }), '按最大HP计算，与固定伤害相加'),
+        ),
+        checkbox('地形伤害也影响飞行单位', t.damageFlying ?? false, set('damageFlying')),
+        h('small.tsrpg-muted', '地形伤害可致死，不受防御减免；只结算落脚格，不计算沿途经过的格子。'),
         field('描述（会告诉 LLM）', textArea(t.desc, set('desc'), 2, '例如：湍急的河流，水声隆隆')),
     );
 }

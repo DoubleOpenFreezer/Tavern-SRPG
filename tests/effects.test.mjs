@@ -44,7 +44,7 @@ test('防御力上升减少伤害，持续回合结束后消失', () => {
     assert.match(composeMessage(b, [ev], S), /骑士 获得【防御力上升50%】（1 回合）/);
     const enemy = E.endPlayerPhase(b, rules, fixed);
     const hit = enemy.find(e => e.type === 'attack' && e.target.name === '骑士');
-    assert.equal(hit.damage, 20 - 15, '敌方阶段时增益仍然有效');
+    assert.equal(hit.damage, Math.round(20 * 12 / (12 + 15)), '敌方阶段时增益仍然有效');
     assert.ok(enemy.some(e => e.type === 'statusEnd' && e.actor.name === '骑士'), '下个我方阶段开始时结束');
     assert.equal(E.stat(k, 'def'), 10);
 });
