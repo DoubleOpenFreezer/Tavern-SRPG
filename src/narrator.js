@@ -31,7 +31,7 @@ export function eventCategory(e) {
 
 /** 是否按设置需要描写该事件 */
 export function shouldNarrate(e, n) {
-    if (e.type === 'result' || e.type === 'mission') return true;
+    if (e.type === 'result' || e.type === 'mission' || e.type === 'rewind') return true;
     const side = e.actor?.side;
     if (e.type !== 'reinforce' && side === 'enemy' && !n.enemy) return false;
     if (e.type !== 'reinforce' && side === 'ally' && !n.ally) return false;
@@ -74,6 +74,10 @@ function formatEventBody(e) {
             return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
         case 'manual':
             return `【手动修改】${e.text}`;
+        case 'rewind':
+            return e.restore
+                ? `【战斗回溯】战场恢复到回溯前的进度（第 ${e.toTurn} 回合），之后的战况以当前战场为准。`
+                : `【战斗回溯】战场回到第 ${e.toTurn} 回合我方阶段开始时的状态（原进度为第 ${e.fromTurn} 回合），之后的战况以当前战场为准。`;
         case 'terrainDamage':
             return `${who(e.actor)} ${e.timing === 'turn' ? '回合开始时' : '落脚时'}受到${e.terrain}伤害，损失 ${e.damage} 点生命（${hpChange(e)}）${e.killed ? '，被击败' : ''}。`;
         case 'wait':
@@ -159,12 +163,13 @@ function briefEvent(e) {
  * @param {object[]} events 待发送事件
  * @param {object} settings 插件设置
  * @param {string} note 用户补充说明
+ * @param {{force?: (e: object) => boolean}} opts force：无视描写设置、必须描写的事件（如用户点了「生成描写」的交战）
  */
-export function composeMessage(battle, events, settings, note = '') {
+export function composeMessage(battle, events, settings, note = '', { force } = {}) {
     const n = settings.narration;
     const narrate = [], brief = [];
     for (const e of events) {
-        if (shouldNarrate(e, n)) narrate.push(formatEvent(e));
+        if (force?.(e) || shouldNarrate(e, n)) narrate.push(formatEvent(e));
         else if (n.brief) {
             const s = briefEvent(e);
             if (s) brief.push(s);

@@ -105,6 +105,37 @@ test('开始战斗后显示棋盘，并可选择单位和待机', t => {
     assert.ok(find(root, n => n.classes.has('tsrpg-board')));
 });
 
+test('回溯回到之前回合的战场，聊天不受影响，可撤销返回', async t => {
+    const { app, root, context, click } = setup(t);
+    app.settings.send.autoOnEndTurn = false;
+    context.chat = [{}, {}];
+    click('开始战斗');
+    const battle = context.chatMetadata[META_KEY];
+    battle.units.forEach(u => { if (u.side === 'player') u.acted = true; });
+    await click('结束回合');
+    assert.equal(battle.turn, 2);
+    assert.deepEqual(battle.history.map(c => [c.kind, c.turn]), [['start', 1], ['turn', 2]]);
+    battle.units.find(u => u.side === 'player').hp = 1;
+    context.chat.push({}, {});
+    click('回溯');
+    const rows = app.panel.children.at(-1);
+    assert.ok(rows.textContent.includes('开战 · 第 1 回合'));
+    assert.ok(rows.textContent.includes('聊天第 2 楼'));
+    const buttons = [];
+    find(rows, n => { if (n.tag === 'button' && n.textContent === '回到这里') buttons.push(n); return false; });
+    buttons.at(-1).listeners.click(); // 列表从新到旧，最后一个是开战
+    const now = context.chatMetadata[META_KEY];
+    assert.notEqual(now, battle);
+    assert.equal(now.turn, 1);
+    assert.ok(now.units.filter(u => u.side === 'player').every(u => u.hp === u.maxHp && !u.acted));
+    assert.equal(context.chat.length, 4);
+    assert.equal(now.history.at(-1).kind, 'rewind');
+    assert.ok(root.textContent.includes('战斗回溯'));
+    assert.equal(app.rewindDialog, null);
+    click('撤销');
+    assert.equal(context.chatMetadata[META_KEY].turn, 2);
+});
+
 test('小窗结束战斗需要明确确认，取消保留进度，旧确认不能清除新战斗', t => {
     const { app, root, context, click, saves } = setup(t);
     app.settings.ui.layout = 'compact';

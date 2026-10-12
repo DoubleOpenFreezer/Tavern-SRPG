@@ -40,6 +40,17 @@ test('关闭“描写敌人行动”且不简要告知时，敌方行动完全�
     assert.ok(/骑士 对 哥布林A/.test(msg));
 });
 
+test('用户要求生成描写的交战不受描写设置限制，不会被归为背景信息', () => {
+    const { b, ev } = battleWithEvents();
+    const s = structuredClone(S);
+    s.narration.ally = false; s.narration.enemy = false; s.narration.attack = false;
+    const msg = composeMessage(b, ev, s, '', { force: e => e.type === 'attack' || e.type === 'skill' });
+    const [need, bg = ''] = msg.split('【背景信息');
+    assert.match(need, /【需要描写的行动】[\s\S]*普通攻击/);
+    assert.ok(!/普通攻击/.test(bg), 'attack not in brief section');
+    assert.ok(/移动到/.test(bg), 'move still follows settings');
+});
+
 test('绑定世界书的单位带上关键词，状态摘要包含 HP 与地形', () => {
     const units = structuredClone(S.units);
     units[0].wb = { book: '书', uid: 0, label: '骑士·罗兰', keys: ['罗兰'] };

@@ -8,6 +8,7 @@ import { COMMANDS } from '../commands.js';
 import { applyManualChange } from '../manual.js';
 import { playBattleEvents } from './action-process.js';
 import { exchangePreview } from '../exchange.js';
+import { recordCheckpoint, rewindBattle, checkpointTitle } from '../history.js';
 
 const PHASE = { player: '我方阶段', enemy: '敌方阶段', ally: '友军阶段' };
 const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动' };
@@ -118,6 +119,7 @@ function startBattle(app, map) {
     b.profileName = app.data.name;
     b.pending.push({ type: 'mission', turn: 1, text: missionText(b) });
     b.pending.push({ type: 'phase', turn: 1, phase: 'player' });
+    recordCheckpoint(b, { chat: ST.chatLength(), kind: 'start' });
     app.bs = newBattleUi();
     ST.setBattle(b);
     app.updateInjection();
@@ -189,7 +191,9 @@ function computeMarks(b, ui) {
 }
 
 function pushUndo(app, b) {
-    app.bs.undo.push(structuredClone(b));
+    // 回合内的操作不改动回溯存档，撤销快照不必复制它
+    const { history, ...rest } = b;
+    app.bs.undo.push(structuredClone(rest));
     if (app.bs.undo.length > 30) app.bs.undo.shift();
 }
 
@@ -197,6 +201,7 @@ function undo(app) {
     if (app.bs.busy || ST.getBattle()?.paused) return;
     const snap = app.bs.undo.pop();
     if (!snap) return;
+    if (!snap.history && ST.getBattle()?.history) snap.history = ST.getBattle().history;
     ST.setBattle(snap);
     app.bs.sel = null; app.bs.mode = 'idle';
     app.bs.engagement = null;
@@ -499,6 +504,7 @@ function renderActive(app, root, b) {
             manualToggle(app),
             h('details.tsrpg-battle-management',
                 h('summary', '战斗管理'),
+                rewindButton(app, b),
                 button('结束战斗', () => endBattle(app), { icon: 'fa-flag-checkered', cls: 'danger', disabled: !!ui.busy })),
         );
         return;
@@ -523,6 +529,7 @@ function renderActive(app, root, b) {
             button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
             quietTurnButton(app, b),
             pauseButton(app, b),
+            rewindButton(app, b),
             manualToggle(app),
             button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
             button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
@@ -609,7 +616,8 @@ function sendEngagementNarration(app, b, events) {
     if (ST.isGenerating()) { toast('warning', 'LLM正在生成，本次战斗已保留在待发送行动中。'); return false; }
     let note = app.bs.note;
     if (app.settings.send.includeInput) note = [note, ST.readMainInput().trim()].filter(Boolean).join('\n');
-    const text = composeMessage(b, events, app.settings, note);
+    // 用户明确要求描写这次交战：攻击 / 技能不受「描写设置」限制，不能被归为可略过的背景信息
+    const text = composeMessage(b, events, app.settings, note, { force: e => e.type === 'attack' || e.type === 'skill' });
     if (ST.sendAsUser(text) === false) return false;
     const sent = new Set(events);
     b.pending = b.pending.filter(e => !sent.has(e));
@@ -760,6 +768,7 @@ async function endTurn(app, b, quiet = false) {
     if (app.bs !== ui || ST.getBattle() !== b) return;
     ui.busy = null;
     b.pending.push(...events);
+    recordCheckpoint(b, { chat: ST.chatLength() });
     app.bs.undo = [];
     app.bs.sel = null; app.bs.mode = 'idle';
     ST.saveBattle();
@@ -830,6 +839,60 @@ function endBattle(app) {
     app.endBattleDialog = overlay;
     app.panel.append(overlay);
     cancel.focus();
+}
+
+// ---------------------------------------------------------------- 回溯
+
+function rewindButton(app, b) {
+    return button('回溯', () => rewindDialog(app, b), {
+        icon: 'fa-clock-rotate-left', disabled: !!app.bs.busy,
+        title: '回到之前某个回合开始时的战场，补录剧情后继续',
+    });
+}
+
+const clock = at => {
+    const d = new Date(at);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+function rewindDialog(app, b) {
+    if (app.bs.busy || b.paused || ST.getBattle() !== b || app.rewindDialog) return;
+    const dismiss = () => {
+        overlay.remove();
+        app.rewindDialog = null;
+    };
+    const list = (b.history || []).slice().reverse();
+    const rows = list.map(cp => h('div.tsrpg-checkpoint',
+        h('div',
+            h('b', checkpointTitle(cp)),
+            h('div.tsrpg-muted', `聊天第 ${cp.chat} 楼 · 我方 ${cp.player} 人 · 敌方 ${cp.enemy} 人 · ${clock(cp.at)}`)),
+        button('回到这里', () => { dismiss(); rewindTo(app, b, cp.id); }, { icon: 'fa-clock-rotate-left' })));
+    const close = button('关闭', dismiss, { cls: 'primary' });
+    const overlay = h('div.tsrpg-overlay', {
+        onclick: e => { if (e.target === overlay) dismiss(); },
+        onkeydown: e => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } },
+    }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '战斗回溯' },
+        h('div.tsrpg-section-title', '战斗回溯'),
+        h('p.tsrpg-muted', '回到某个回合开始时的战场：棋盘、HP、技能冷却、状态和增援进度都恢复到那时，聊天记录不会被删除，可以直接补录对话后继续战斗。当前进度会自动保存为「回溯前的进度」，也可以用「撤销」立即返回。'),
+        rows.length ? h('div.tsrpg-checkpoints', rows) : h('div.tsrpg-muted', '还没有存档。每个我方阶段开始时会自动保存（更新前开始的战斗从下一回合开始记录）。'),
+        h('div.tsrpg-row', close)));
+    app.rewindDialog = overlay;
+    app.panel.append(overlay);
+    close.focus();
+}
+
+export function rewindTo(app, b, id) {
+    // 旧对话框不能改动切换聊天后的战斗
+    if (app.bs.busy || b.paused || ST.getBattle() !== b) return false;
+    const next = rewindBattle(b, id, { chat: ST.chatLength() });
+    if (!next) return false;
+    app.bs = newBattleUi();
+    app.bs.undo = [structuredClone(b)];
+    ST.setBattle(next);
+    app.updateInjection();
+    toast('success', `已回到第 ${next.turn} 回合，可以补录剧情后继续战斗。`);
+    app.render();
+    return true;
 }
 
 // ---------------------------------------------------------------- 发送

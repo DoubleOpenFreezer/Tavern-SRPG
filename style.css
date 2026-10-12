@@ -61,6 +61,8 @@
 .tsrpg-battle-management > summary { cursor: pointer; color: var(--tsrpg-muted); font-size: 0.85em; }
 .tsrpg-battle-management > .tsrpg-btn { margin-top: 8px; }
 .tsrpg-end-battle-buttons { justify-content: space-between; gap: 16px; }
+.tsrpg-checkpoints { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.tsrpg-checkpoint { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--tsrpg-border); border-radius: 6px; }
 .tsrpg-manual-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--tsrpg-accent); border-radius: 6px; margin: 6px 0; }
 .tsrpg-process-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tsrpg-engagement { border: 1px solid var(--tsrpg-accent); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
