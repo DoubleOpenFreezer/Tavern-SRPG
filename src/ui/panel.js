@@ -3,7 +3,7 @@ import { h, clear, button } from './dom.js';
 import { renderBattleTab, newBattleUi } from './battle.js';
 import { renderUnitsTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
 import { renderSettingsTab } from './settings.js';
-import { stateSummary } from '../narrator.js';
+import { buildBattleContext } from '../context.js';
 import { alive } from '../engine.js';
 import * as ST from '../st.js';
 
@@ -23,6 +23,7 @@ export class App {
         this.body = null;
         this.tabBar = null;
         this.injectSeq = 0;
+        this.wbCache = {}; // uid -> 世界书条目内容（供宏和工具同步读取）
     }
 
     get settings() {
@@ -130,24 +131,40 @@ export class App {
         this.render();
     }
 
-    /** 把战场状态注入到提示词中 */
+    /**
+     * 给 LLM 看的战场信息
+     * @param {string[]} [sections] 只输出某些部分：mission / map / units / log
+     */
+    battleContext(sections) {
+        const b = ST.getBattle();
+        if (!b?.active) return '';
+        const inj = this.settings.inject;
+        const opts = { ...inj, sections };
+        if (sections) Object.assign(opts, { map: true, legend: true, stats: true, skills: true, nearest: true });
+        // 替换别名、世界书内容里的 {{user}} {{char}}，让宏、工具、注入看到的都是真实名字
+        return ST.substitute(buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {}));
+    }
+
+    /** 把战场信息注入到提示词中 */
     async updateInjection() {
         const seq = ++this.injectSeq;
         const s = this.settings;
         const b = ST.getBattle();
-        if (!s.inject.enabled || !b?.active) {
-            ST.setInjection('', 0);
+        if (!b?.active) {
+            this.wbCache = {};
+            ST.setInjection('');
             return;
         }
-        const wb = {};
         if (s.inject.includeWb) {
+            const wb = {};
             for (const u of alive(b)) {
                 if (!u.wb) continue;
                 const text = await ST.getEntryContent(u.wb);
                 if (text) wb[u.uid] = text;
             }
+            if (seq !== this.injectSeq) return; // 已有更新的调用
+            this.wbCache = wb;
         }
-        if (seq !== this.injectSeq) return; // 已有更新的调用
-        ST.setInjection(stateSummary(b, wb), s.inject.depth);
+        ST.setInjection(s.inject.enabled ? this.battleContext() : '', s.inject);
     }
 }

@@ -30,6 +30,23 @@ export function h(sel, attrs, ...children) {
     return el;
 }
 
+/** 在面板内弹出一个文本框对话框 */
+export function textDialog(container, title, text, { note, buttons = [] } = {}) {
+    const ta = h('textarea.text_pole.tsrpg-preview-text', { rows: 18, readOnly: true, value: text });
+    const overlay = h('div.tsrpg-overlay',
+        h('div.tsrpg-dialog',
+            h('div.tsrpg-section-title', title),
+            note ? h('div.tsrpg-muted', note) : null,
+            ta,
+            h('div.tsrpg-row',
+                buttons,
+                button('复制', () => { navigator.clipboard?.writeText(ta.value); toast('success', '已复制'); }, { icon: 'fa-copy' }),
+                button('关闭', () => overlay.remove(), { icon: 'fa-xmark' })),
+        ));
+    container.append(overlay);
+    return overlay;
+}
+
 export function clear(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
     return el;

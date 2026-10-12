@@ -322,7 +322,8 @@ function applyDamage(u, dmg) {
 }
 
 function ref(u) {
-    return { uid: u.uid, name: u.name, side: u.side, wbKey: u.wb?.keys?.[0] || '', object: !!u.object, keyTarget: !!u.keyTarget };
+    const alias = String(u.aliases || '').split(/[,，、]/).map(x => x.trim()).find(Boolean) || '';
+    return { uid: u.uid, name: u.name, side: u.side, alias, wbKey: u.wb?.keys?.[0] || '', object: !!u.object, keyTarget: !!u.keyTarget };
 }
 
 function canCounter(b, defender, attacker) {
@@ -904,6 +905,7 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         statuses: [],
         phaseX: x, phaseY: y,
         wb: d.wb ? structuredClone(d.wb) : null,
+        aliases: d.aliases || '',
         notes: d.notes || '',
         moved: false, acted: false,
     };

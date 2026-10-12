@@ -1,5 +1,8 @@
 // 设置页：描写模式、发送方式、战斗规则、注入、导入导出
-import { h, clear, toast, button, select, field, numInput, textArea, checkbox } from './dom.js';
+import { h, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
+import { CONTEXT_SECTIONS } from '../context.js';
+import { MACROS } from '../llm.js';
+import { getBattle } from '../st.js';
 import { DEFAULT_HEADER, defaultSettings } from '../defaults.js';
 import { normalizeSkill } from '../engine.js';
 
@@ -56,12 +59,37 @@ export function renderSettingsTab(app, root) {
         ),
         h('div.tsrpg-muted', '命中率＝基础命中 ＋（攻方AGI − 守方AGI）× 系数 ＋ 技能命中修正 − 守方地形闪避，限制在 0–100%。普通攻击、反击、伤害技能和对敌方的辅助技能都会判定；对友方的技能、攻击建筑物、必中技能一定命中。'),
 
-        h('div.tsrpg-section-title', '战场状态注入'),
-        h('div.tsrpg-muted', '每次生成时把当前棋盘（HP、位置、地形）作为系统提示注入聊天，让 LLM 在你自由输入文字时也不会搞错战况。'),
-        h('div.tsrpg-grid3',
-            h('div', checkbox('启用注入', s.inject.enabled, on(s.inject, 'enabled', () => app.updateInjection()))),
-            field('注入深度', numInput(s.inject.depth, on(s.inject, 'depth', () => app.updateInjection()), { min: 0, max: 20 })),
-            h('div', checkbox('附带绑定的世界书条目内容', s.inject.includeWb, on(s.inject, 'includeWb', () => app.updateInjection()), '条目内容较长时会占用较多上下文')),
+        h('div.tsrpg-section-title', 'LLM 读取战场', h('div.tsrpg-spacer'),
+            button('查看 LLM 看到的内容', () => previewContext(app), { icon: 'fa-eye' })),
+        h('div.tsrpg-muted', '让 LLM 随时知道每个单位的 HP、状态、位置和地图，避免描写与棋盘对不上。有三种方式，可以同时使用。'),
+
+        h('div.tsrpg-label', '① 自动注入：每次生成时附上战场信息'),
+        h('div.tsrpg-grid4',
+            h('div', checkbox('启用自动注入', s.inject.enabled, on(s.inject, 'enabled', () => app.updateInjection()))),
+            field('注入位置', select([['chat', '聊天记录中（按深度）'], ['before', '主提示词之前'], ['after', '主提示词之后']], s.inject.position, on(s.inject, 'position', () => { app.updateInjection(); app.render(); }))),
+            s.inject.position === 'chat' ? field('深度', numInput(s.inject.depth, on(s.inject, 'depth', () => app.updateInjection()), { min: 0, max: 50 }), '0＝最新消息之后') : h('div'),
+            field('身份', select([['system', 'System'], ['user', 'User'], ['assistant', 'Assistant']], s.inject.role, on(s.inject, 'role', () => app.updateInjection()))),
+        ),
+        h('div.tsrpg-checks',
+            Object.entries(CONTEXT_SECTIONS).map(([k, label]) => checkbox(label, s.inject[k], on(s.inject, k, () => app.updateInjection()))),
+            checkbox('附带绑定的世界书条目内容', s.inject.includeWb, on(s.inject, 'includeWb', () => app.updateInjection()), '条目内容较长时会占用较多上下文'),
+        ),
+        h('div.tsrpg-row',
+            h('span.tsrpg-label', '附带最近战斗记录（条）'),
+            h('div', { style: { width: '80px' } }, numInput(s.inject.logLines, on(s.inject, 'logLines', () => app.updateInjection()), { min: 0, max: 50 })),
+            h('small.tsrpg-muted', '0＝不附带。战斗过程已经写在聊天记录里，一般不需要。'),
+        ),
+
+        h('div.tsrpg-label', '② 宏：在提示词、角色卡、世界书、作者注释里手动放置'),
+        h('div.tsrpg-macros', Object.entries(MACROS).map(([name, [desc]]) =>
+            h('div', h('code', `{{${name}}}`), h('span.tsrpg-muted', ` ${desc}`))),
+        h('div', h('code', '{{srpg_turn}}'), h('span.tsrpg-muted', ' 当前回合数'))),
+        h('small.tsrpg-muted', '没有战斗时宏为空。如果用宏放置了完整信息，可以关闭自动注入，避免重复。'),
+
+        h('div.tsrpg-label', '③ 函数调用：LLM 需要时自己查询'),
+        h('div.tsrpg-row',
+            checkbox('注册查询工具 SRPG_GetBattleState', s.tool.enabled, on(s.tool, 'enabled')),
+            h('small.tsrpg-muted', '仅在战斗进行中可用。需要使用支持函数调用的 Chat Completion 接口，并在 AI 响应配置中开启「启用函数调用」。'),
         ),
 
         h('div.tsrpg-section-title', '界面'),
@@ -124,4 +152,16 @@ function importData(app) {
         }
     });
     input.click();
+}
+
+function previewContext(app) {
+    const b = getBattle();
+    if (!b?.active) {
+        toast('info', '当前聊天没有进行中的战斗。先在「战场」页开始一场战斗。');
+        return;
+    }
+    const text = app.battleContext();
+    textDialog(app.panel, 'LLM 看到的战场信息', text, {
+        note: `约 ${text.length} 字。这就是自动注入和 {{srpg}} 宏的内容（{{user}} {{char}} 等宏会在发送时替换）。`,
+    });
 }

@@ -1,6 +1,7 @@
 // Tavern-SRPG：SillyTavern 战棋插件入口
 import { App } from './src/ui/panel.js';
 import { ctx, getBattle } from './src/st.js';
+import { registerMacros, registerTool } from './src/llm.js';
 
 const app = new App();
 window.TavernSRPG = app;
@@ -59,6 +60,12 @@ jQuery(async () => {
     addMenuButton();
     addSettingsDrawer();
     registerCommand();
+    try {
+        registerMacros(app);
+        registerTool(app);
+    } catch (err) {
+        console.warn('[Tavern-SRPG] 注册宏 / 工具失败', err);
+    }
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_CHANGED, () => app.onChatChanged());

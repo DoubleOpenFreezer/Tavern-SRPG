@@ -1,5 +1,5 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
-import { h, clear, toast, button, select, renderBoard, textArea } from './dom.js';
+import { h, clear, toast, button, select, renderBoard, textArea, textDialog } from './dom.js';
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
@@ -404,6 +404,7 @@ function renderActive(app, root, b) {
             h('div.tsrpg-spacer'),
             button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length, title: '撤销上一步操作' }),
             button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' }),
+            button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
             button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
         ),
         h('div.tsrpg-mission',

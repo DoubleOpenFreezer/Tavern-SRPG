@@ -1,12 +1,13 @@
 // 把战斗事件 / 战场状态翻译成给 LLM 的文本
-import { SIDE_NAMES, MISSION_NAMES, alive, terrainAt, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel } from './engine.js';
+import { SIDE_NAMES, MISSION_NAMES, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel } from './engine.js';
 
 const pos = p => `(${p.x + 1},${p.y + 1})`;
 const KIND = { physical: '物理', magical: '魔法', support: '辅助', heal: '治疗' };
 
 function who(r) {
-    // 绑定了世界书的单位附带关键词，方便触发世界书条目
-    return r.wbKey && r.wbKey !== r.name ? `${r.name}〈${r.wbKey}〉` : r.name;
+    // 附带故事中的名字或世界书关键词，让 LLM 对上号，也方便触发世界书条目
+    const alias = r.alias || r.wbKey;
+    return alias && alias !== r.name ? `${r.name}〈${alias}〉` : r.name;
 }
 
 function hpChange(r) {
@@ -145,48 +146,6 @@ export function composeMessage(battle, events, settings, note = '') {
     if (note && note.trim()) {
         lines.push('', '【用户补充要求】', note.trim());
     }
-    return lines.join('\n');
-}
-
-/**
- * 每次生成时注入的战场状态
- * @param {Record<string,string>} wbContents uid -> 世界书条目内容
- */
-export function stateSummary(battle, wbContents = {}) {
-    if (!battle?.active) return '';
-    const lines = [];
-    const phase = battle.result ? (battle.result === 'victory' ? '已胜利' : '已战败') : `${SIDE_NAMES[battle.phase] || battle.phase}阶段`;
-    lines.push(`[Tavern-SRPG 战场状态｜${battle.mapName}｜第 ${battle.turn} 回合 · ${phase}]`);
-    if (battle.mapDesc) lines.push(`地图：${battle.mapDesc}`);
-    lines.push(`任务：${missionText(battle)}`);
-    const waves = upcomingWaves(battle);
-    if (waves) lines.push(`增援预告：${waves}`);
-
-    const used = new Set(battle.tiles);
-    const tdesc = [...used].map(id => battle.terrains[id]).filter(Boolean)
-        .map(t => `${t.name}${t.desc ? `：${t.desc}` : ''}`);
-    if (tdesc.length) lines.push(`地形：${tdesc.join('；')}`);
-
-    for (const side of ['player', 'ally', 'enemy']) {
-        const us = battle.units.filter(u => u.side === side);
-        if (!us.length) continue;
-        const desc = us.map(u => {
-            if (u.hp <= 0) return `${u.name}（${u.object ? '已被摧毁' : '已被击败'}）`;
-            const t = terrainAt(battle, u.x, u.y);
-            const tag = u.keyTarget ? '【关键目标】' : u.object ? '【建筑】' : '';
-            const st = (u.statuses || []).map(x => `${effectLabel(x)}·剩${x.turns}回合`);
-            return `${u.name}${tag} HP ${u.hp}/${u.maxHp} 位于${pos(u)}${t.name}${st.length ? `〔${st.join('、')}〕` : ''}`;
-        });
-        lines.push(`${SIDE_NAMES[side]}：${desc.join('；')}`);
-    }
-
-    const wb = alive(battle).filter(u => wbContents[u.uid]);
-    if (wb.length) {
-        lines.push('单位设定：');
-        wb.forEach(u => lines.push(`- ${u.name}：${wbContents[u.uid]}`));
-    }
-
-    lines.push('规则：战场上的数值（HP、位置、击败与否）只由 SRPG 战斗系统计算。若用户以自由文字描述行动，只做叙事描写，不要自行判定伤害、击败、位移或改变上述状态。');
     return lines.join('\n');
 }
 

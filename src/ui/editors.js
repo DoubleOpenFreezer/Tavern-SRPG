@@ -73,6 +73,8 @@ function unitForm(app, u) {
             field('阵营', select(SIDES, u.side, set('side', true))),
             field('类型', select([['unit', '角色（会行动）'], ['object', '建筑 / 目标物（不会行动）']], u.kind || 'unit', set('kind', true)),
                 '建筑物只有 HP / DEF / MDEF，例如城门、水晶、旗帜'),
+            field('故事中的名字 / 别名', textInput(u.aliases, set('aliases'), '逗号分隔，可写 {{user}} {{char}}'),
+                'LLM 在故事里怎么称呼这个单位；会写进战场信息，让两边对上号'),
             field('棋子文字', textInput(u.icon, set('icon', true), '默认取名称首字')),
             field('棋子颜色', h('div.tsrpg-row',
                 h('input', { type: 'color', value: u.color || '#2f6fd6', onchange: e => set('color', true)(e.target.value) }),

@@ -34,6 +34,7 @@ export function makeUnit(over = {}) {
         ai: 'aggressive',
         skills: [],
         wb: null,
+        aliases: '', // 故事中的名字 / 别名，逗号分隔，可以写 {{user}} {{char}}
         notes: '',
         ...over,
     };
@@ -203,8 +204,16 @@ export function defaultSettings() {
         },
         inject: {
             enabled: true,
+            position: 'chat', // chat: 聊天记录中（按深度）; before: 主提示词之前; after: 主提示词之后
             depth: 2,
+            role: 'system', // system | user | assistant
             includeWb: false, // 把绑定的世界书条目内容一并注入
+            // 注入哪些部分
+            map: true, legend: true, stats: true, skills: true, nearest: true,
+            logLines: 0, // 附带最近 N 条战斗记录
+        },
+        tool: {
+            enabled: false, // 注册函数调用工具，让 LLM 主动查询战场（需要支持函数调用的 Chat Completion 接口）
         },
         ui: { cell: 40, left: null, top: null, width: null, height: null, tab: 'battle' },
     };

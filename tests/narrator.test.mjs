@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defaultSettings } from '../src/defaults.js';
 import * as E from '../src/engine.js';
-import { composeMessage, stateSummary } from '../src/narrator.js';
+import { composeMessage } from '../src/narrator.js';
+import { buildBattleContext, defaultContextOptions } from '../src/context.js';
 
 const S = defaultSettings();
 
@@ -45,7 +46,7 @@ test('绑定世界书的单位带上关键词，状态摘要包含 HP 与地形'
     const b = E.createBattle(S.maps[0], units, S.terrains);
     const ev = E.doWait(b, b.units[0]);
     assert.ok(composeMessage(b, [ev], S).includes('骑士〈罗兰〉'));
-    const st = stateSummary(b, { u0: '罗兰是骑士团长' });
-    assert.ok(st.includes('骑士 HP 32/32 位于(2,4)平原'));
-    assert.ok(st.includes('骑士：罗兰是骑士团长'));
+    const st = buildBattleContext(b, defaultContextOptions(), { u0: '罗兰是骑士团长' });
+    assert.match(st, /\[P1\] 骑士（又名：罗兰）｜我方｜位于 \(2,4\) 平原｜HP 32\/32/);
+    assert.ok(st.includes('- 骑士：罗兰是骑士团长'));
 });

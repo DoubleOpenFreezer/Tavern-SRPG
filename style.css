@@ -217,6 +217,10 @@
 .tsrpg-dialog { width: min(720px, 100%); max-height: 100%; overflow: auto; background: var(--tsrpg-bg); border: 1px solid var(--tsrpg-border); border-radius: 10px; padding: 12px; }
 .tsrpg-dialog .tsrpg-section-title { margin-top: 0; }
 .tsrpg-preview-text { width: 100%; font-family: inherit; }
+.tsrpg-macros { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; margin: 4px 0; }
+.tsrpg-macros code { user-select: all; }
+.tsrpg-panel .tsrpg-label + .tsrpg-grid4, .tsrpg-panel .tsrpg-label + .tsrpg-macros { margin-top: 2px; }
+.tsrpg-body div.tsrpg-label { display: block; margin-top: 8px; }
 
 /* 窄屏 */
 @media (max-width: 700px) {

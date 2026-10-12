@@ -121,11 +121,27 @@ export async function getEntryContent(wb) {
 
 const INJECT_KEY = 'tavern_srpg_state';
 
-export function setInjection(text, depth = 2) {
+const POSITIONS = { after: 0, chat: 1, before: 2 }; // extension_prompt_types: IN_PROMPT / IN_CHAT / BEFORE_PROMPT
+const ROLES = { system: 0, user: 1, assistant: 2 };
+
+/** 替换 {{user}} {{char}} 等宏 */
+export function substitute(text) {
+    const c = ctx();
+    try {
+        return typeof c.substituteParams === 'function' ? c.substituteParams(text) : text;
+    } catch {
+        return text;
+    }
+}
+
+/**
+ * 注入战场信息。scan=true 让世界书能扫描到单位名和别名。
+ * @param {{position?:string, depth?:number, role?:string}} opt
+ */
+export function setInjection(text, opt = {}) {
     const c = ctx();
     if (typeof c.setExtensionPrompt !== 'function') return;
-    // position 1 = IN_CHAT，scan=true 让世界书能扫描到单位名，role 0 = system
-    c.setExtensionPrompt(INJECT_KEY, text || '', 1, Number(depth) || 0, true, 0);
+    c.setExtensionPrompt(INJECT_KEY, text ? substitute(text) : '', POSITIONS[opt.position] ?? 1, Number(opt.depth) || 0, true, ROLES[opt.role] ?? 0);
 }
 
 export function isGenerating() {
