@@ -3,6 +3,8 @@ import { h, clear, toast, button, select, renderBoard, textArea, textDialog } fr
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
+import { runAiPhases, previewProposals, acceptProposals, rejectProposals } from './llm-flow.js';
+import { COMMANDS } from '../commands.js';
 
 const PHASE = { player: '我方阶段', enemy: '敌方阶段', ally: '友军阶段' };
 const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动' };
@@ -10,7 +12,7 @@ const KIND = { physical: '物理', magical: '魔法', support: '辅助' };
 
 /** 战场交互状态（不持久化） */
 export function newBattleUi() {
-    return { sel: null, mode: 'idle', skillId: null, hover: null, undo: [], note: '', setupMap: null, showLog: false };
+    return { sel: null, mode: 'idle', skillId: null, hover: null, undo: [], note: '', setupMap: null, showLog: false, busy: null, keep: null };
 }
 
 export function renderBattleTab(app, root) {
@@ -171,6 +173,7 @@ function act(app, b, fn) {
 
 function onCell(app, b, x, y) {
     const ui = app.bs;
+    if (ui.busy) return;
     const u = selUnit(b, ui);
     const at = E.unitAt(b, x, y);
     const key = `${x},${y}`;
@@ -403,7 +406,7 @@ function renderActive(app, root, b) {
             b.phase === 'player' && !b.result ? h('span.tsrpg-muted', `待行动 ${left}`) : null,
             h('div.tsrpg-spacer'),
             button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length, title: '撤销上一步操作' }),
-            button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' }),
+            button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
             button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
             button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
         ),
@@ -413,6 +416,8 @@ function renderActive(app, root, b) {
         h('div.tsrpg-battle',
             h('div.tsrpg-board-wrap', refs.board),
             h('div.tsrpg-side',
+                ui.busy ? h('div.tsrpg-busy', h('i.fa-solid.fa-spinner.fa-spin'), ` ${ui.busy}`) : null,
+                proposalPanel(app, b),
                 u ? unitCard(b, u) : h('div.tsrpg-muted', '点击我方单位选择，右键取消。红色区域为可攻击范围。'),
                 actionPanel(app, b, u),
                 refs.preview,
@@ -432,10 +437,31 @@ function renderActive(app, root, b) {
     );
 }
 
-function endTurn(app, b) {
+async function endTurn(app, b) {
+    if (app.bs.busy) return;
     const left = E.alive(b).filter(x => x.side === 'player' && !x.object && !x.acted && !E.isStunned(x)).length;
     if (left && !confirm(`还有 ${left} 个我方单位未行动，确定结束回合吗？`)) return;
-    const events = E.endPlayerPhase(b, app.settings.rules);
+    const s = app.settings;
+    let events;
+    if (E.AI_SIDES.some(side => s.llm.commander[side])) {
+        // 有阵营由 LLM 指挥：异步结算，期间锁定棋盘
+        const before = structuredClone(b);
+        app.bs.busy = '敌方回合结算中……';
+        app.bs.sel = null; app.bs.mode = 'idle';
+        app.render();
+        try {
+            events = await runAiPhases(app, b);
+        } catch (err) {
+            app.bs.busy = null;
+            toast('warning', err.message || String(err));
+            if (ST.getBattle() === b) { ST.setBattle(before); app.updateInjection(); }
+            app.render();
+            return;
+        }
+        app.bs.busy = null;
+    } else {
+        events = E.endPlayerPhase(b, s.rules);
+    }
     b.pending.push(...events);
     app.bs.undo = [];
     app.bs.sel = null; app.bs.mode = 'idle';
@@ -444,6 +470,31 @@ function endTurn(app, b) {
     if (b.result) toast(b.result === 'victory' ? 'success' : 'error', b.result === 'victory' ? '战斗胜利！' : '战斗失败……');
     app.render();
     if (app.settings.send.autoOnEndTurn) dispatch(app, b);
+}
+
+/** LLM 在回复里提议的战场变化，等待确认 */
+function proposalPanel(app, b) {
+    const p = b.llm?.proposals;
+    if (!p) return null;
+    const ui = app.bs;
+    const rows = previewProposals(app, b);
+    if (!ui.keep || ui.keep.length !== rows.length || ui.keepFor !== p) {
+        ui.keep = rows.map(r => r.ok);
+        ui.keepFor = p;
+    }
+    return h('div.tsrpg-proposals',
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-scroll'), ` LLM 提议的战场变化（第 ${p.mesId + 1} 楼）`),
+        rows.map((r, i) => h(`label.tsrpg-proposal${r.ok ? '' : '.bad'}`,
+            h('input', { type: 'checkbox', checked: ui.keep[i], disabled: !r.ok, onchange: e => { ui.keep[i] = e.target.checked; } }),
+            h('span',
+                r.ok ? formatEvent(r.event) : `${r.c.raw}`,
+                r.ok ? null : h('small.tsrpg-warn', ` ✖ ${r.error}`),
+                r.c.cmd ? h('small.tsrpg-muted', ` 〔${COMMANDS[r.c.cmd].label}〕`) : null))),
+        h('div.tsrpg-row',
+            button('应用勾选的变化', () => acceptProposals(app, b, ui.keep), { icon: 'fa-check', cls: 'primary', disabled: !rows.some(r => r.ok) }),
+            button('全部拒绝', () => rejectProposals(app, b), { icon: 'fa-xmark' })),
+        h('small.tsrpg-muted', '预览按顺序推演；应用后可以用「撤销」撤回。重新生成这条回复时，已应用的变化会自动撤回。'),
+    );
 }
 
 function endBattle(app) {

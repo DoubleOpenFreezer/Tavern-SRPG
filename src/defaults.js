@@ -215,6 +215,19 @@ export function defaultSettings() {
         tool: {
             enabled: false, // 注册函数调用工具，让 LLM 主动查询战场（需要支持函数调用的 Chat Completion 接口）
         },
+        llm: {
+            // ① 剧情指令：LLM 在回复末尾写 <srpg> 指令块修改战场
+            commands: false,
+            mode: 'confirm', // confirm: 由我确认后应用 ; auto: 自动应用
+            allow: { damage: true, heal: true, status: true, unstatus: true, move: true, retreat: true, spawn: true, terrain: true, end: false },
+            maxChangePct: 50, // 单条指令的 HP 变化上限（目标最大 HP 的百分比）
+            allowKill: false, // 指令能否直接击败单位
+            hideBlock: true, // 从聊天消息中移除指令块
+            // ② LLM 指挥官：由 LLM 为 AI 单位选择行动
+            commander: { enemy: false, ally: false },
+            options: 6, // 每个单位最多列出几个选项
+            intent: true, // 让 LLM 附带一句意图，写进战斗描写
+        },
         ui: { cell: 40, left: null, top: null, width: null, height: null, tab: 'battle' },
     };
 }

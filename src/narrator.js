@@ -23,6 +23,7 @@ export function eventCategory(e) {
         case 'phase': case 'terrainHeal': case 'mission': return 'turn';
         case 'reinforce': return 'reinforce';
         case 'dot': case 'statusEnd': case 'stunned': return 'status';
+        case 'llm': return 'llm';
         case 'result': return 'result';
         default: return 'other';
     }
@@ -41,7 +42,34 @@ export function shouldNarrate(e, n) {
 }
 
 export function formatEvent(e) {
+    const text = formatEventBody(e);
+    // LLM 指挥官给出的意图
+    return e.intent && text ? text.replace(/。?$/, `（意图：${e.intent}）。`) : text;
+}
+
+function formatLlm(e) {
+    const why = e.reason ? `——${e.reason}` : '';
+    const a = e.actor ? who(e.actor) : '';
+    switch (e.cmd) {
+        case 'damage': return `【剧情】${a} 受到 ${e.amount} 点伤害（${hpChange(e)}）${e.killed ? '，倒下了' : ''}${e.note || ''}${why}`;
+        case 'heal': return `【剧情】${a} 恢复了 ${e.amount} 点生命（${hpChange(e)}）${why}`;
+        case 'status': return e.removed
+            ? `【剧情】${a} 身上的减益被驱散${e.removed.length ? `：${e.removed.map(x => `【${x}】`).join('')}` : ''}${why}`
+            : `【剧情】${a} ${e.debuff ? '陷入' : '获得'}【${e.label}】（${e.turns} 回合）${why}`;
+        case 'unstatus': return `【剧情】${a} 身上的${e.removed.map(x => `【${x}】`).join('')}被解除${why}`;
+        case 'move': return `【剧情】${a} 从 ${pos(e.from)} 移动到 ${pos(e.to)}${e.terrain}${why}`;
+        case 'retreat': return `【剧情】${a} 撤离了战场${why}`;
+        case 'spawn': return `【剧情】${a} 出现在 ${pos(e.at)}${e.terrain}${why}`;
+        case 'terrain': return `【剧情】${pos(e.at)} 的${e.from}变成了${e.to}${why}`;
+        case 'end': return `【剧情】战斗结束：${e.result === 'victory' ? '我方胜利' : '我方战败'}${why}`;
+        default: return `【剧情】${e.raw || ''}`;
+    }
+}
+
+function formatEventBody(e) {
     switch (e.type) {
+        case 'llm':
+            return formatLlm(e);
         case 'move':
             return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。`;
         case 'wait':

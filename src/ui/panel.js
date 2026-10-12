@@ -4,6 +4,7 @@ import { renderBattleTab, newBattleUi } from './battle.js';
 import { renderUnitsTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
 import { renderSettingsTab } from './settings.js';
 import { buildBattleContext } from '../context.js';
+import { commandGuide } from '../commands.js';
 import { alive } from '../engine.js';
 import * as ST from '../st.js';
 
@@ -138,11 +139,14 @@ export class App {
     battleContext(sections) {
         const b = ST.getBattle();
         if (!b?.active) return '';
-        const inj = this.settings.inject;
-        const opts = { ...inj, sections };
+        const { inject: inj, llm } = this.settings;
+        const opts = { ...inj, sections, commands: llm.commands };
         if (sections) Object.assign(opts, { map: true, legend: true, stats: true, skills: true, nearest: true });
+        let text = buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {});
+        // 开启剧情指令时，告诉 LLM 怎样写指令
+        if (llm.commands && !sections) text += `\n\n${commandGuide(llm)}`;
         // 替换别名、世界书内容里的 {{user}} {{char}}，让宏、工具、注入看到的都是真实名字
-        return ST.substitute(buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {}));
+        return ST.substitute(text);
     }
 
     /** 把战场信息注入到提示词中 */

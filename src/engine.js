@@ -26,12 +26,13 @@ export function terrainAt(b, x, y) {
     return b.terrains[id] || { id, name: id || '未知', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '' };
 }
 
+/** 场上的单位（未倒下、未撤退） */
 export function alive(b) {
-    return b.units.filter(u => u.hp > 0);
+    return b.units.filter(u => u.hp > 0 && !u.retreated);
 }
 
 export function unitAt(b, x, y) {
-    return b.units.find(u => u.hp > 0 && u.x === x && u.y === y) || null;
+    return b.units.find(u => u.hp > 0 && !u.retreated && u.x === x && u.y === y) || null;
 }
 
 export function getUnit(b, uid) {
@@ -601,15 +602,15 @@ function effectScore(b, caster, t, e, rules) {
 }
 
 /**
- * 在 (x,y) 位置能做出的最佳行动
+ * 在 (x,y) 位置能做出的所有行动及估值
  * @param {(t:object)=>boolean} filter 攻击类行动必须命中至少一个满足条件的目标
  * @param {'attack'|'support'} mode attack：普通攻击与伤害技能；support：辅助技能
  */
-function bestActionAt(b, unit, x, y, rules, filter, mode) {
+function candidatesAt(b, unit, x, y, rules, filter, mode) {
     const ox = unit.x, oy = unit.y;
     unit.x = x; unit.y = y;
-    let best = null;
-    const consider = (cand) => { if (cand.score > 0 && (!best || cand.score > best.score)) best = cand; };
+    const list = [];
+    const consider = (cand) => { if (cand.score > 0) list.push(cand); };
     if (mode === 'attack') {
         for (const t of attackTargets(b, unit).filter(filter)) {
             const dmg = calcDamage(b, unit, t, unit.atkType, 100, rules, Math.random, true);
@@ -644,10 +645,16 @@ function bestActionAt(b, unit, x, y, rules, filter, mode) {
             }
             // 有次数限制或冷却的技能，略微倾向于保留
             if (sk.uses || Number(sk.cooldown) > 1) score *= 0.9;
-            consider({ kind: 'skill', x, y, skill: sk, tx, ty, score });
+            consider({ kind: 'skill', x, y, skill: sk, tx, ty, targets: aff, score });
         }
     }
     unit.x = ox; unit.y = oy;
+    return list;
+}
+
+function bestActionAt(b, unit, x, y, rules, filter, mode) {
+    let best = null;
+    for (const c of candidatesAt(b, unit, x, y, rules, filter, mode)) if (!best || c.score > best.score) best = c;
     return best;
 }
 
@@ -842,25 +849,29 @@ export function processReinforcements(b) {
     return events;
 }
 
-/** 结束我方阶段：敌方行动 → 友军行动 → 增援 → 新回合 */
-export function endPlayerPhase(b, rules, rng = Math.random) {
+export const AI_SIDES = ['enemy', 'ally'];
+
+/**
+ * 某个 AI 阵营的阶段开始：结算持续效果，返回本阶段要行动的单位
+ * （即使该阵营没有单位，也要结算它施加的持续效果）
+ */
+export function beginSidePhase(b, side) {
+    const events = [];
+    const group = alive(b).filter(u => u.side === side && !u.object);
+    const effects = startTurnEffects(b, side);
+    if (group.length) {
+        b.phase = side;
+        events.push({ type: 'phase', turn: b.turn, phase: side });
+    }
+    events.push(...effects);
+    for (const u of group) { u.moved = false; u.acted = false; }
+    return { events, group };
+}
+
+/** 所有 AI 阵营行动完毕：增援 → 回合限制 → 新回合的我方阶段 */
+export function finishRound(b) {
     const events = [];
     if (b.result) return events;
-    for (const side of ['enemy', 'ally']) {
-        const group = alive(b).filter(u => u.side === side && !u.object);
-        // 即使该阵营没有单位，也要结算它施加的持续效果
-        const effects = startTurnEffects(b, side);
-        if (group.length) {
-            b.phase = side;
-            events.push({ type: 'phase', turn: b.turn, phase: side });
-        }
-        events.push(...effects);
-        for (const u of group) {
-            u.moved = false; u.acted = false;
-            events.push(...aiAct(b, u, rules, rng));
-            if (b.result) return events;
-        }
-    }
     events.push(...processReinforcements(b));
     setResult(b, checkTurnLimit(b), events);
     if (b.result) return events;
@@ -871,6 +882,104 @@ export function endPlayerPhase(b, rules, rng = Math.random) {
     events.push(...startTurnEffects(b, 'player'));
     finish(b, events);
     return events;
+}
+
+/** 结束我方阶段：敌方行动 → 友军行动 → 增援 → 新回合（全部由内置 AI 决定） */
+export function endPlayerPhase(b, rules, rng = Math.random) {
+    const events = [];
+    if (b.result) return events;
+    for (const side of AI_SIDES) {
+        const { events: ev, group } = beginSidePhase(b, side);
+        events.push(...ev);
+        for (const u of group) {
+            if (u.hp <= 0 || u.retreated) continue;
+            events.push(...aiAct(b, u, rules, rng));
+            if (b.result) return events;
+        }
+    }
+    events.push(...finishRound(b));
+    return events;
+}
+
+// ---------------------------------------------------------------- 供 LLM 选择的行动
+
+/**
+ * 列出某个 AI 单位本回合可选的行动（供 LLM 指挥官选择）。
+ * 每个目标只保留最好的一种打法，再加上朝不同目标前进、原地待命。
+ * @returns {{kind:'attack'|'skill'|'move'|'wait', x:number, y:number, target?:object, skill?:object, tx?:number, ty?:number, toward?:object, score:number}[]}
+ */
+export function aiOptions(b, unit, rules, limit = 6) {
+    if (unit.hp <= 0 || unit.object || isStunned(unit)) return [];
+    const nodes = [...(unit.ai === 'stationary'
+        ? [{ x: unit.x, y: unit.y, cost: 0 }]
+        : reachable(b, unit).values())];
+    const anyFoe = t => isFoe(t, unit);
+    const best = new Map();
+    for (const n of nodes) {
+        for (const mode of ['attack', 'support']) {
+            for (const c of candidatesAt(b, unit, n.x, n.y, rules, anyFoe, mode)) {
+                c.score -= n.cost * 0.01;
+                const key = c.kind === 'attack' ? `a:${c.target.uid}` : `s:${c.skill.id}:${(c.targets || []).map(t => t.uid).join(',')}`;
+                if (!best.has(key) || best.get(key).score < c.score) best.set(key, c);
+            }
+        }
+    }
+    const actions = [...best.values()].sort((a, c) => c.score - a.score).slice(0, Math.max(1, limit - 2));
+
+    const moves = [];
+    if (unit.ai !== 'stationary') {
+        const fromMe = distanceField(b, unit, [[unit.x, unit.y]]);
+        const goals = goalTargets(b, unit).map(g => [g, fieldDist(b, fromMe, g)]).sort((a, c) => a[1] - c[1]).slice(0, 2);
+        for (const [g] of goals) {
+            const field = distanceField(b, unit, [[g.x, g.y]]);
+            let dest = null;
+            for (const n of nodes) {
+                const v = field[n.y * b.w + n.x];
+                if (!dest || v < dest.v || (v === dest.v && n.cost < dest.cost)) dest = { ...n, v };
+            }
+            if (dest && isFinite(dest.v) && (dest.x !== unit.x || dest.y !== unit.y) && !moves.some(m => m.x === dest.x && m.y === dest.y)) {
+                moves.push({ kind: 'move', x: dest.x, y: dest.y, toward: g, score: 0 });
+            }
+        }
+    }
+    return [...actions, ...moves, { kind: 'wait', x: unit.x, y: unit.y, score: 0 }];
+}
+
+/** 当前局面下这个行动是否仍然可以执行（其他单位行动后，位置或目标可能已经变化） */
+export function planValid(b, unit, plan) {
+    if (!plan || unit.hp <= 0 || unit.retreated || isStunned(unit)) return false;
+    if (plan.x !== unit.x || plan.y !== unit.y) {
+        if (unit.ai === 'stationary' || !reachable(b, unit).has(`${plan.x},${plan.y}`)) return false;
+    }
+    const ox = unit.x, oy = unit.y;
+    unit.x = plan.x; unit.y = plan.y;
+    let ok = true;
+    if (plan.kind === 'attack') {
+        const t = getUnit(b, plan.target.uid);
+        ok = !!t && attackTargets(b, unit).includes(t);
+    } else if (plan.kind === 'skill') {
+        const sk = unit.skills.find(x => x.id === plan.skill.id);
+        ok = !!sk && skillUsable(sk) && skillTargetTiles(b, unit, sk).some(([x, y]) => x === plan.tx && y === plan.ty);
+    }
+    unit.x = ox; unit.y = oy;
+    return ok;
+}
+
+/**
+ * 按指定的行动行动；行动已经无效时交给内置 AI。
+ * @returns {{events: object[], usedPlan: boolean}}
+ */
+export function actWithPlan(b, unit, plan, rules, rng = Math.random) {
+    if (!planValid(b, unit, plan)) return { events: aiAct(b, unit, rules, rng), usedPlan: false };
+    const events = [];
+    const mv = doMove(b, unit, plan.x, plan.y);
+    if (mv) events.push(mv);
+    if (plan.kind === 'attack') events.push(doAttack(b, unit, getUnit(b, plan.target.uid), rules, rng));
+    else if (plan.kind === 'skill') events.push(doSkill(b, unit, unit.skills.find(x => x.id === plan.skill.id), plan.tx, plan.ty, rules, rng));
+    else if (plan.kind === 'wait' && !mv) events.push(doWait(b, unit));
+    unit.acted = true;
+    finish(b, events);
+    return { events, usedPlan: true };
 }
 
 // ---------------------------------------------------------------- 创建战斗

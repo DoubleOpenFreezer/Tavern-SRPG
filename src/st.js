@@ -54,6 +54,8 @@ export function setBattle(battle) {
 
 export function saveBattle() {
     const c = ctx();
+    const b = c.chatMetadata?.[META_KEY];
+    if (b) b.rev = (b.rev || 0) + 1; // 版本号：用来判断某次改动之后棋盘是否又变过
     if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
     else if (typeof c.saveMetadata === 'function') c.saveMetadata();
 }
@@ -165,4 +167,42 @@ export function sendAsUser(text) {
     writeMainInput(text);
     const btn = document.getElementById('send_but');
     if (btn) btn.click();
+}
+
+// ---------------------------------------------------------------- 聊天消息 & 后台生成
+
+export function currentChatId() {
+    const c = ctx();
+    return c.getCurrentChatId?.() ?? c.chatId ?? null;
+}
+
+export function getMessage(id) {
+    return ctx().chat?.[id] || null;
+}
+
+export function chatLength() {
+    return ctx().chat?.length ?? 0;
+}
+
+/** 改写一条消息的正文（同时改写当前 swipe）并保存聊天 */
+export async function rewriteMessage(id, text) {
+    const c = ctx();
+    const msg = c.chat?.[id];
+    if (!msg) return;
+    msg.mes = text;
+    if (Array.isArray(msg.swipes) && msg.swipe_id != null) msg.swipes[msg.swipe_id] = text;
+    try { c.updateMessageBlock?.(id, msg); } catch (err) { console.warn('[Tavern-SRPG] 刷新消息失败', err); }
+    await c.saveChat?.();
+}
+
+/**
+ * 后台生成（不会出现在聊天里），带上角色卡、聊天记录与注入的战场信息。
+ * 兼容新旧两种 generateQuietPrompt 签名。
+ */
+export async function quietGenerate(prompt) {
+    const c = ctx();
+    const fn = c.generateQuietPrompt;
+    if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持后台生成（generateQuietPrompt）');
+    const res = fn.length === 0 ? await fn({ quietPrompt: prompt }) : await fn(prompt, false, false);
+    return String(res ?? '');
 }

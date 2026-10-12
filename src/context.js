@@ -173,6 +173,8 @@ export function buildBattleContext(b, opts = defaultContextOptions(), wbContents
         }
         const fallen = b.units.filter(u => u.hp <= 0);
         if (fallen.length) out.push(`已倒下：${fallen.map(u => `${u.name}（${SIDE_NAMES[u.side]}${u.object ? '，已摧毁' : ''}）`).join('、')}`);
+        const gone = b.units.filter(u => u.hp > 0 && u.retreated);
+        if (gone.length) out.push(`已撤离战场：${gone.map(u => `${u.name}（${SIDE_NAMES[u.side]}）`).join('、')}`);
         const wb = alive(b).filter(u => wbContents[u.uid]);
         if (wb.length) {
             out.push('', '## 单位设定（来自世界书）');
@@ -183,6 +185,8 @@ export function buildBattleContext(b, opts = defaultContextOptions(), wbContents
     if (want('log') && n > 0 && b.log?.length) {
         out.push('', `## 最近战况（最近 ${Math.min(n, b.log.length)} 条）`, ...b.log.slice(-n).map(l => `- ${l}`));
     }
-    out.push('', '规则：以上数值（HP、位置、状态、击败与否）只由 SRPG 战斗系统计算。描写时请与之保持一致；若用户以自由文字描述行动，只做叙事描写，不要自行判定伤害、击败、位移或改变上述状态。');
+    out.push('', opts.commands
+        ? '规则：以上数值（HP、位置、状态、击败与否）由 SRPG 战斗系统计算，描写时请与之保持一致。普通的攻击与技能由玩家操作；只有剧情本身改变战场时，才使用下方的指令，不要在正文里自行宣布数值变化。'
+        : '规则：以上数值（HP、位置、状态、击败与否）只由 SRPG 战斗系统计算。描写时请与之保持一致；若用户以自由文字描述行动，只做叙事描写，不要自行判定伤害、击败、位移或改变上述状态。');
     return out.join('\n');
 }
