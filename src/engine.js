@@ -752,13 +752,17 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
                 }
             } else {
                 if (!aff.some(t => filter(t) && skillHitChance(b, unit, sk, t, rules) > 0)) continue;
+                // 鲁莽的单位使用MAP攻击时不在乎误伤友军（旧单位没有该字段，视为鲁莽）
+                const reckless = unit.mapReckless !== false;
                 for (const t of aff) {
+                    const foe = isFoe(t, unit);
+                    if (!foe && reckless) continue;
                     let dmg = calcDamage(b, unit, t, sk.kind, sk.power, rules, Math.random, true);
                     if (defaultReaction(b, unit, t, rules, sk) === 'defend' && !t.object) dmg = defenseDamage(dmg, rules);
                     const hit = skillHitChance(b, unit, sk, t, rules) / 100;
                     const value = 1 + (Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0)) * hit;
-                    score += isFoe(t, unit) ? value : -value * 2;
-                    if (dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5 * hit;
+                    score += foe ? value : -value * 2;
+                    if (foe && dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5 * hit;
                 }
             }
             // 有次数限制或冷却的技能，略微倾向于保留
@@ -1200,6 +1204,7 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         weaponName: d.weaponName || '',
         flying: !object && !!d.flying,
         ai: object ? 'stationary' : d.ai || 'aggressive',
+        mapReckless: d.mapReckless !== false,
         object,
         keyTarget: !!d.keyTarget,
         skills: object ? [] : (d.skills || []).map(s => ({ ...normalizeSkill(structuredClone(s)), usesLeft: Number(s.uses) || 0, cdLeft: 0 })),

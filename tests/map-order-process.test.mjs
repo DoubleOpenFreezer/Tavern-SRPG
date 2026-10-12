@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { makeUnit, makeSkill, makeMap, DEFAULT_TERRAINS, defaultRules, defaultSettings } from '../src/defaults.js';
 import * as E from '../src/engine.js';
 import { formatEvent, skillSummary } from '../src/narrator.js';
+import { describePlan } from '../src/commander.js';
 import { buildBattleContext } from '../src/context.js';
 import { actionFrames, playBattleEvents } from '../src/ui/action-process.js';
 
@@ -51,16 +52,39 @@ test('MAP地块范围按菱形半径覆盖，允许选空地，支持仅敌方�
     assert.throws(() => E.doSkill(b, h, skill, 6, 4, rules), /范围/);
 });
 
-test('MAP攻击空区域仍消耗技能，AI会避免净损失的友军误伤', () => {
+test('MAP攻击空区域仍消耗技能，关闭鲁莽的AI会避免净损失的友军误伤', () => {
     const sk = makeSkill({ attackMode: 'mapLine', lineLength: 3, uses: 1 });
     const b = battle([hero({ skills: [sk] }), foe()], [[0, 0], [4, 4]]);
     const ev = E.doSkill(b, b.units[0], b.units[0].skills[0], 1, 0, rules, fixed);
     assert.equal(ev.results.length, 0);
     assert.equal(b.units[0].skills[0].usesLeft, 0);
-    const ai = battle([foe({ skills: [sk] }), foe({ id: 'a' }), hero()], [[0, 0], [1, 0], [2, 0]]);
+    const ai = battle([foe({ skills: [sk], mapReckless: false }), foe({ id: 'a' }), hero()], [[0, 0], [1, 0], [2, 0]]);
+    assert.equal(ai.units[0].mapReckless, false);
     assert.ok(!E.aiOptions(ai, ai.units[0], rules, 30).some(p => p.kind === 'skill'));
     ai.units[0].skills[0].mapTargets = 'enemy';
     assert.ok(E.aiOptions(ai, ai.units[0], rules, 30).some(p => p.kind === 'skill'));
+});
+
+test('鲁莽使用MAP攻击（默认）：被挑衅时也会穿过整排友军轰击目标，不会只打友军', () => {
+    const sk = makeSkill({ attackMode: 'mapLine', lineLength: 20, sureHit: true });
+    const goblins = [1, 2, 3, 4].map(i => foe({ id: `g${i}`, hp: 10 }));
+    const b = battle([hero(), ...goblins, foe({ id: 'fort', skills: [sk] })], [[0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [6, 2]]);
+    const fort = b.units.at(-1);
+    assert.equal(fort.mapReckless, true, '未设置时默认鲁莽');
+    b.units[0].statuses.push({ type: 'taunt', value: 0, turns: 1, srcSide: 'player' });
+    const plan = E.aiOptions(b, fort, rules)[0];
+    assert.equal(plan.kind, 'skill');
+    assert.match(describePlan(b, fort, plan, rules), /误伤友军/);
+    const ev = E.aiAct(b, fort, rules, fixed);
+    const blast = ev.find(e => e.type === 'skill');
+    assert.ok(blast, '发射MAP攻击');
+    assert.equal(blast.results.length, 5);
+    assert.ok(b.units.slice(1, 5).every(g => g.hp === 0), '整排友军被清除');
+    assert.ok(b.units[0].hp < 100);
+
+    // 线上只有友军、没有敌人时不会发射
+    const only = battle([hero(), foe({ id: 'g' }), foe({ id: 'fort', skills: [sk] })], [[0, 0], [1, 2], [3, 2]]);
+    assert.ok(!E.aiOptions(only, only.units[2], rules, 30).some(p => p.kind === 'skill' && p.targets.every(t => !E.isFoe(t, only.units[2]))));
 });
 
 test('后手主动攻击时目标先攻，双方后手或无法回击时主动方先攻', () => {

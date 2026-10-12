@@ -453,6 +453,9 @@ function syncBindings(app, b) {
             u.wb = d.wb ? structuredClone(d.wb) : null;
             changed = true;
         }
+        // AI 倾向随资料卡更新，已在场的单位也立即生效
+        const reckless = d.mapReckless !== false;
+        if (u.mapReckless !== reckless) { u.mapReckless = reckless; changed = true; }
     }
     if (changed) { ST.saveBattle(); }
     return changed;

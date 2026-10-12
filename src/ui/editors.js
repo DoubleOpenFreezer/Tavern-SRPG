@@ -111,6 +111,9 @@ function unitForm(app, u) {
                 checkbox('飞行单位', u.flying, set('flying'), '飞行单位无视地形移动消耗，可越过河流、峡谷等'),
             ),
             u.side !== 'player' ? field('AI 行为', select(AIS, u.ai, set('ai'))) : null,
+            u.side !== 'player' && u.skills?.some(sk => ['mapLine', 'mapArea'].includes(sk.attackMode))
+                ? checkbox('鲁莽使用MAP攻击', u.mapReckless !== false, set('mapReckless'), '开启：只要能打到敌人就发射，不顾误伤友军，可以引诱它轰击自己人；关闭：误伤友军的损失大于收益时不使用')
+                : null,
         ],
         h('div.tsrpg-section-title', '世界书绑定'),
         wbBinder(app, u),

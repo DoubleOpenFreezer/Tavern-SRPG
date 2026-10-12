@@ -1,5 +1,5 @@
 // LLM 指挥官：把 AI 单位的可选行动列给 LLM，由 LLM 选择。纯逻辑部分（描述、提示词、解析回复）。
-import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit, attractionTargets } from './engine.js';
+import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit, attractionTargets, isFoe } from './engine.js';
 import { unitLabels } from './context.js';
 import { exchangePreview } from './exchange.js';
 
@@ -28,6 +28,7 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
                     const hit = skillHitChance(b, unit, sk, t, rules);
                     if (hit < 100) bits.push(`命中${hit}%`);
                     if (sk.kind !== 'support') bits.push(`伤害约${exchangePreview(b, unit, t, rules, sk).damage}`);
+                    if (!isFoe(t, unit)) bits.unshift('误伤友军');
                     return `${name(t)}${bits.length ? `（${bits.join('，')}）` : ''}`;
                 });
                 return `${go}使用【${sk.name}】${sk.attackMode === 'mapLine' ? 'MAP直线，不反击；' : sk.attackMode === 'mapArea' ? 'MAP范围，不反击；' : ''}作用于 ${who.join('、')}`;

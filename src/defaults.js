@@ -35,6 +35,7 @@ export function makeUnit(over = {}) {
         attackOrder: 'normal', // last：普通攻击时，对能回击的非后手目标让出先攻
         flying: false,
         ai: 'aggressive',
+        mapReckless: true, // 鲁莽使用MAP攻击：AI 不顾误伤友军；关闭后只在打敌人的收益大于误伤时使用
         traits: [], // 常驻特质 [{ id, name, desc, effects }]
         skills: [],
         wb: null,
