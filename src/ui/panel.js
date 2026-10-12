@@ -36,45 +36,82 @@ export class App {
     }
 
     get isOpen() {
-        return !!this.panel && !this.panel.hidden;
+        return !!this.panel && !!this._open;
     }
 
     mount() {
-        const s = this.settings;
         this.tabBar = h('div.tsrpg-tabs');
         this.body = h('div.tsrpg-body');
+        this.layoutBtn = button('', () => this.setLayout(this.settings.ui.layout === 'dock' ? 'float' : 'dock'), { cls: 'tsrpg-icon-btn' });
         const header = h('div.tsrpg-header',
-            h('div.tsrpg-title', h('i.fa-solid.fa-chess-knight'), ' Tavern-SRPG'),
+            h('div.tsrpg-title', h('i.fa-solid.fa-chess-knight'), h('span', ' Tavern-SRPG')),
             this.tabBar,
-            button('', () => this.toggle(false), { icon: 'fa-xmark', cls: 'tsrpg-close', title: '关闭' }),
+            this.layoutBtn,
+            button('', () => this.toggle(false), { icon: 'fa-xmark', cls: 'tsrpg-icon-btn', title: '收起（点击悬浮按钮可再次打开）' }),
         );
-        this.panel = h('div#tsrpg-panel.tsrpg-panel', { hidden: true }, header, this.body);
+        this.dockHandle = h('div.tsrpg-dock-handle', { title: '拖动调整宽度' });
+        this.panel = h('div#tsrpg-panel.tsrpg-panel', { hidden: true }, this.dockHandle, header, this.body);
         document.body.append(this.panel);
-
-        const { ui } = s;
-        if (ui.width) this.panel.style.width = `${ui.width}px`;
-        if (ui.height) this.panel.style.height = `${ui.height}px`;
-        if (ui.left != null && ui.top != null) {
-            this.panel.style.left = `${ui.left}px`;
-            this.panel.style.top = `${ui.top}px`;
-        }
+        this.mountFab();
+        this.applyLayout();
         this.enableDrag(header);
-        let t = null;
+        this.enableDockResize();
+
+        // 记住浮动窗口的尺寸；宽度变化时切换紧凑布局并重新适配棋盘
+        let t = null, lastW = 0;
         new ResizeObserver(() => {
             if (!this.isOpen) return;
+            const w = this.panel.getBoundingClientRect().width;
+            this.panel.classList.toggle('narrow', w < 640);
             clearTimeout(t);
             t = setTimeout(() => {
                 const r = this.panel.getBoundingClientRect();
-                Object.assign(this.settings.ui, { width: Math.round(r.width), height: Math.round(r.height) });
-                this.save();
-            }, 400);
+                if (this.settings.ui.layout === 'float' && window.innerWidth >= 700) {
+                    Object.assign(this.settings.ui, { width: Math.round(r.width), height: Math.round(r.height) });
+                    this.save();
+                }
+                if (Math.abs(r.width - lastW) > 8) { lastW = r.width; this.render(); }
+            }, 200);
         }).observe(this.panel);
+        window.addEventListener('resize', () => this.placeFab());
+    }
+
+    /** 停靠在右侧（默认）或自由浮动 */
+    applyLayout() {
+        const { ui } = this.settings;
+        const dock = ui.layout !== 'float';
+        const p = this.panel;
+        p.classList.toggle('dock', dock);
+        p.classList.toggle('float', !dock);
+        p.style.cssText = '';
+        if (dock) {
+            p.style.width = `${Math.max(320, Number(ui.dockWidth) || 440)}px`;
+        } else {
+            if (ui.width) p.style.width = `${ui.width}px`;
+            if (ui.height) p.style.height = `${ui.height}px`;
+            if (ui.left != null && ui.top != null) {
+                p.style.left = `${Math.min(ui.left, window.innerWidth - 120)}px`;
+                p.style.right = 'auto';
+                p.style.top = `${Math.min(ui.top, window.innerHeight - 60)}px`;
+            }
+        }
+        p.hidden = !this.isOpenState;
+        clear(this.layoutBtn).append(h(`i.fa-solid.${dock ? 'fa-window-restore' : 'fa-table-columns'}`));
+        this.layoutBtn.title = dock ? '改为自由浮动窗口' : '停靠到右侧';
+        this.placeFab();
+    }
+
+    setLayout(layout) {
+        this.settings.ui.layout = layout;
+        this.save();
+        this.applyLayout();
+        this.render();
     }
 
     enableDrag(handle) {
         let start = null;
         handle.addEventListener('mousedown', e => {
-            if (e.target.closest('button, .tsrpg-tab') || window.innerWidth < 700) return;
+            if (this.settings.ui.layout !== 'float' || e.target.closest('button, .tsrpg-tab') || window.innerWidth < 700) return;
             const r = this.panel.getBoundingClientRect();
             start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
             e.preventDefault();
@@ -95,10 +132,122 @@ export class App {
         });
     }
 
+    /** 停靠模式：拖动左边缘调整宽度 */
+    enableDockResize() {
+        let start = null;
+        this.dockHandle.addEventListener('mousedown', e => {
+            start = { x: e.clientX, w: this.panel.getBoundingClientRect().width };
+            document.body.classList.add('tsrpg-resizing');
+            e.preventDefault();
+        });
+        window.addEventListener('mousemove', e => {
+            if (!start) return;
+            const w = Math.max(320, Math.min(window.innerWidth * 0.9, start.w + (start.x - e.clientX)));
+            this.panel.style.width = `${Math.round(w)}px`;
+            this.updateSqueeze();
+        });
+        window.addEventListener('mouseup', () => {
+            if (!start) return;
+            start = null;
+            document.body.classList.remove('tsrpg-resizing');
+            this.settings.ui.dockWidth = Math.round(this.panel.getBoundingClientRect().width);
+            this.save();
+        });
+    }
+
+    // ---------------------------------------------------------------- 悬浮按钮
+
+    mountFab() {
+        this.fabBadge = h('span.tsrpg-fab-badge', { hidden: true });
+        this.fab = h('div#tsrpg-fab.tsrpg-fab', { title: 'Tavern-SRPG 战棋（可拖动）' }, h('i.fa-solid.fa-chess-knight'), this.fabBadge);
+        document.body.append(this.fab);
+        let start = null;
+        const onMove = e => {
+            if (!start) return;
+            const dx = e.clientX - start.x, dy = e.clientY - start.y;
+            if (!start.moved && Math.hypot(dx, dy) < 5) return;
+            start.moved = true;
+            const right = Math.max(4, Math.min(window.innerWidth - 52, start.right - dx));
+            const bottom = Math.max(4, Math.min(window.innerHeight - 52, start.bottom - dy));
+            Object.assign(this.fab.style, { right: `${right}px`, bottom: `${bottom}px` });
+        };
+        const onUp = () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            if (!start) return;
+            const moved = start.moved;
+            start = null;
+            if (moved) {
+                const r = this.fab.getBoundingClientRect();
+                this.settings.ui.fabPos = { right: Math.round(window.innerWidth - r.right), bottom: Math.round(window.innerHeight - r.bottom) };
+                this.save();
+            } else {
+                this.toggle();
+            }
+        };
+        this.fab.addEventListener('pointerdown', e => {
+            if (e.button !== 0) return;
+            const r = this.fab.getBoundingClientRect();
+            start = { x: e.clientX, y: e.clientY, right: window.innerWidth - r.right, bottom: window.innerHeight - r.bottom, moved: false };
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+            e.preventDefault();
+        });
+        this.placeFab();
+    }
+
+    placeFab() {
+        if (!this.fab) return;
+        const { ui } = this.settings;
+        const pos = ui.fabPos || { right: 20, bottom: 140 };
+        Object.assign(this.fab.style, {
+            right: `${Math.max(4, Math.min(window.innerWidth - 52, pos.right))}px`,
+            bottom: `${Math.max(4, Math.min(window.innerHeight - 52, pos.bottom))}px`,
+        });
+        // 停靠面板打开时，悬浮按钮会被面板挡住，此时隐藏（面板右上角可以收起）
+        const hide = ui.fab === false || (this.isOpen && (ui.layout !== 'float' || window.innerWidth < 700));
+        this.fab.hidden = hide;
+        this.fab.classList.toggle('open', this.isOpen);
+        this.updateSqueeze();
+    }
+
+    /** 停靠面板打开时，让聊天区域在剩余空间里居中，不被面板挡住 */
+    updateSqueeze() {
+        const { ui } = this.settings;
+        const on = this.isOpen && ui.layout !== 'float' && ui.squeeze !== false && window.innerWidth >= 700;
+        document.body.classList.toggle('tsrpg-squeeze', on);
+        if (on) document.body.style.setProperty('--tsrpg-dock-width', `${Math.round(this.panel.getBoundingClientRect().width)}px`);
+    }
+
+    /** 悬浮按钮上的提示：LLM 提议的战场变化数量 */
+    updateFab() {
+        if (!this.fabBadge) return;
+        const n = ST.getBattle()?.llm?.proposals?.cmds?.length || 0;
+        this.fabBadge.hidden = !n;
+        this.fabBadge.textContent = n ? String(n) : '';
+        this.fab.classList.toggle('active', !!ST.getBattle()?.active);
+    }
+
+    /** 根据面板宽度决定格子大小（不超过设置中的上限） */
+    cellFor(w, reserve = 0) {
+        const max = Number(this.settings.ui.cell) || 40;
+        const avail = (this.body?.clientWidth || 600) - 28;
+        const narrow = this.panel?.classList.contains('narrow');
+        // 宽面板时，棋盘旁边还有信息栏 / 列表
+        const room = narrow ? avail : avail - reserve;
+        return Math.max(18, Math.min(max, Math.floor(room / Math.max(1, w)) - 1));
+    }
+
+    get isOpenState() {
+        return !!this._open;
+    }
+
     toggle(force) {
         if (!this.panel) return;
-        const open = force ?? this.panel.hidden;
+        const open = force ?? !this._open;
+        this._open = open;
         this.panel.hidden = !open;
+        this.placeFab();
         if (open) this.render();
     }
 
@@ -109,7 +258,10 @@ export class App {
     }
 
     render() {
-        if (!this.isOpen) return;
+        if (!this.isOpen) { this.updateFab(); return; }
+        // 先按当前宽度决定布局，棋盘格子大小依赖它
+        this.panel.classList.toggle('narrow', this.panel.getBoundingClientRect().width < 640);
+        this.updateSqueeze();
         const s = this.settings;
         if (!TABS.some(t => t[0] === s.ui.tab)) s.ui.tab = 'battle';
         clear(this.tabBar).append(...TABS.map(([id, label, icon]) =>
@@ -124,6 +276,7 @@ export class App {
             clear(this.body).append(h('div.tsrpg-empty', `界面渲染出错：${err.message || err}`));
         }
         this.body.scrollTop = scroll;
+        this.updateFab();
     }
 
     onChatChanged() {

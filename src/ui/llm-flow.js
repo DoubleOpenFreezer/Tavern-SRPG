@@ -48,10 +48,9 @@ export async function handleMessage(app, mesId, type) {
         const prev = st.proposals?.mesId === mesId && type === 'continue' ? st.proposals.cmds : [];
         st.proposals = { mesId, cmds: [...prev, ...cmds] };
         ST.saveBattle();
-        toast('info', `LLM 提议了 ${cmds.length} 项战场变化，请在战棋面板中确认。`);
-        if (!app.isOpen) app.toggle(true);
-        app.setTab?.('battle');
-        app.render();
+        toast('info', `LLM 提议了 ${cmds.length} 项战场变化，点击悬浮按钮在战场页确认。`);
+        if (app.isOpen && app.settings.ui.tab !== 'battle') app.setTab('battle');
+        else app.render();
     }
 }
 

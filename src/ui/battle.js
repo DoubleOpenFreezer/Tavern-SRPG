@@ -1,5 +1,5 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
-import { h, clear, toast, button, select, renderBoard, textArea, textDialog } from './dom.js';
+import { h, add, clear, toast, button, select, renderBoard, textArea, textDialog } from './dom.js';
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
@@ -48,7 +48,7 @@ function renderSetup(app, root) {
     const marks = new Map();
     for (const w of map.reinforcements || []) marks.set(`${w.x},${w.y}`, ['m-spawn']);
 
-    root.append(
+    add(root,
         h('div.tsrpg-row',
             h('b', '选择地图：'),
             select(s.maps.map(m => [m.id, `${m.name}（${m.w}×${m.h}）· ${E.MISSION_NAMES[m.mission?.type || 'annihilate']}`]), map.id, v => { ui.setupMap = v; app.render(); }),
@@ -59,7 +59,7 @@ function renderSetup(app, root) {
         map.desc ? h('div.tsrpg-desc', map.desc) : null,
         h('div.tsrpg-row.tsrpg-muted', `我方 ${counts('player')} · 友军 ${counts('ally')} · 敌方 ${counts('enemy')}`),
         problems.map(p => h('div.tsrpg-warn', h('i.fa-solid.fa-triangle-exclamation'), ` ${p}`)),
-        h('div.tsrpg-board-wrap', renderBoard({ w: map.w, h: map.h, tiles: map.tiles, terrain: terr, units, marks, cell: Math.min(s.ui.cell, 32) })),
+        h('div.tsrpg-board-wrap', renderBoard({ w: map.w, h: map.h, tiles: map.tiles, terrain: terr, units, marks, cell: Math.min(app.cellFor(map.w), 32) })),
     );
 }
 
@@ -380,7 +380,7 @@ function renderActive(app, root, b) {
     refs.preview = h('div.tsrpg-preview');
     refs.hoverInfo = h('div.tsrpg-hoverinfo');
     refs.board = renderBoard({
-        w: b.w, h: b.h, tiles: b.tiles, cell: s.ui.cell,
+        w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312),
         terrain: id => b.terrains[id] || { name: id, color: '#999' },
         units: E.alive(b),
         marks: computeMarks(b, ui),
@@ -400,7 +400,7 @@ function renderActive(app, root, b) {
 
     const sendLabel = { send: '发送给 LLM', fill: '填入输入框', preview: '预览并发送' }[s.send.mode];
 
-    root.append(
+    add(root,
         h('div.tsrpg-row.tsrpg-topbar',
             h('b', b.mapName), h('span', `第 ${b.turn} 回合`), status,
             b.phase === 'player' && !b.result ? h('span.tsrpg-muted', `待行动 ${left}`) : null,

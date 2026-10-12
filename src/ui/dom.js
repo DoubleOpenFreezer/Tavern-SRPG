@@ -47,6 +47,15 @@ export function textDialog(container, title, text, { note, buttons = [] } = {}) 
     return overlay;
 }
 
+/** append 的安全版本：跳过 null / false，展开数组（直接 append(null) 会显示出 "null" 文字） */
+export function add(parent, ...children) {
+    for (const c of children.flat(Infinity)) {
+        if (c == null || c === false) continue;
+        parent.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    }
+    return parent;
+}
+
 export function clear(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
     return el;

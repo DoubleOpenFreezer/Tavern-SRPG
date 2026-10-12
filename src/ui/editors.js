@@ -399,7 +399,7 @@ function mapForm(app, m) {
     for (const w of m.reinforcements) marks.set(`${w.x},${w.y}`, ['m-spawn']);
 
     const board = renderBoard({
-        w: m.w, h: m.h, tiles: m.tiles, terrain: terr, cell: s.ui.cell, marks,
+        w: m.w, h: m.h, tiles: m.tiles, terrain: terr, cell: app.cellFor(m.w, 192), marks,
         units: m.placements.filter(p => unitDefs.has(p.unitId)).map(p => ({ ...unitDefs.get(p.unitId), x: p.x, y: p.y, maxHp: 0 })),
         onCell: (x, y, e) => {
             painting = ed.tool === 'paint';

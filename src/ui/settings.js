@@ -1,5 +1,5 @@
 // 设置页：描写模式、发送方式、战斗规则、注入、导入导出
-import { h, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
+import { h, add, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
 import { CONTEXT_SECTIONS } from '../context.js';
 import { MACROS } from '../llm.js';
 import { COMMANDS } from '../commands.js';
@@ -14,7 +14,7 @@ export function renderSettingsTab(app, root) {
     const s = app.settings;
     const on = (obj, k, after) => v => { obj[k] = v; app.save(); after?.(); };
 
-    root.append(
+    add(root,
         h('div.tsrpg-section-title', '描写模式'),
         h('div.tsrpg-muted', '控制哪些战场变化需要 LLM 描写。关闭的项目不会出现在“需要描写”的列表中。'),
         h('div.tsrpg-checks',
@@ -124,9 +124,13 @@ export function renderSettingsTab(app, root) {
         h('small.tsrpg-muted', '开启后，指令的写法会附在注入的战场信息末尾（可用「查看 LLM 看到的内容」检查）。重新生成、滑动或删除这条回复时，它造成的改动会自动撤回；如果之后棋盘又有别的改动，则不会自动撤回。'),
 
         h('div.tsrpg-section-title', '界面'),
-        h('div.tsrpg-grid3',
-            field('格子大小（像素）', numInput(s.ui.cell, on(s.ui, 'cell', () => app.render()), { min: 20, max: 80 })),
+        h('div.tsrpg-grid4',
+            field('面板位置', select([['dock', '停靠在右侧'], ['float', '自由浮动窗口']], s.ui.layout, v => app.setLayout(v))),
+            field('停靠宽度（像素）', numInput(s.ui.dockWidth, on(s.ui, 'dockWidth', () => app.applyLayout()), { min: 320, max: 1600, step: 20 }), '也可以直接拖动面板左边缘'),
+            field('格子大小上限（像素）', numInput(s.ui.cell, on(s.ui, 'cell', () => app.render()), { min: 18, max: 80 }), '面板较窄时会自动缩小'),
+            h('div', checkbox('显示悬浮按钮', s.ui.fab, on(s.ui, 'fab', () => app.placeFab())), h('small.tsrpg-muted', '可拖动；关闭后从魔杖菜单或 /srpg 打开')),
         ),
+        checkbox('停靠时让聊天区域让出位置（聊天正文在左侧剩余空间居中）', s.ui.squeeze, on(s.ui, 'squeeze', () => app.updateSqueeze())),
 
         h('div.tsrpg-section-title', '导入 / 导出'),
         h('div.tsrpg-row',
