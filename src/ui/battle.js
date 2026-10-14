@@ -618,17 +618,25 @@ export async function performEngagement(app, b, narrate = false) {
     if (narrate) sendEngagementNarration(app, b, events);
 }
 
+/**
+ * 发送「生成描写」：选中的交战必须描写，自上次发送以来的其余行动作为背景信息一并发送，
+ * 之后清空待发送列表，避免已经过去的行动在下次发送时被重复要求描写。
+ */
 function sendEngagementNarration(app, b, events) {
     if (!events?.length || ST.getBattle() !== b || b.paused) return false;
     if (ST.isGenerating()) { toast('warning', 'LLM正在生成，本次战斗已保留在待发送行动中。'); return false; }
     let note = app.bs.note;
     if (app.settings.send.includeInput) note = [note, ST.readMainInput().trim()].filter(Boolean).join('\n');
+    const chosen = new Set(events);
+    const all = [...b.pending, ...events.filter(e => !b.pending.includes(e))];
     // 用户明确要求描写这次交战：攻击 / 技能不受「描写设置」限制，不能被归为可略过的背景信息
-    const text = composeMessage(b, events, app.settings, note, { force: e => e.type === 'attack' || e.type === 'skill' });
+    const text = composeMessage(b, all, app.settings, note, {
+        force: e => chosen.has(e) && (e.type === 'attack' || e.type === 'skill'),
+        background: e => !chosen.has(e),
+    });
     if (ST.sendAsUser(text) === false) return false;
-    const sent = new Set(events);
-    b.pending = b.pending.filter(e => !sent.has(e));
-    b.log.push(...events.map(formatEvent).filter(Boolean));
+    b.pending = [];
+    b.log.push(...all.map(formatEvent).filter(Boolean));
     if (b.log.length > 300) b.log.splice(0, b.log.length - 300);
     app.bs.note = '';
     ST.saveBattle(); app.render();
@@ -681,7 +689,7 @@ function askReaction(app, b, request) {
                 h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
                 h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）。`),
             ],
-            h('small.tsrpg-muted', '生成描写：本回合结算完成后，仅发送选择生成的交战；其他行动保留在待发送列表。'),
+            h('small.tsrpg-muted', '生成描写：本回合结算完成后发送，选择生成的交战会详细描写，自上次发送以来的其他行动作为背景信息一并带过。'),
             h('div.tsrpg-row', defend, counter, defendNarrate, counterNarrate, cancel),
         ));
         ui.cancelReaction = () => settle(null);

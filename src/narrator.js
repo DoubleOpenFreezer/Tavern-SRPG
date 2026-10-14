@@ -165,14 +165,17 @@ function briefEvent(e) {
  * @param {object[]} events 待发送事件
  * @param {object} settings 插件设置
  * @param {string} note 用户补充说明
- * @param {{force?: (e: object) => boolean}} opts force：无视描写设置、必须描写的事件（如用户点了「生成描写」的交战）
+ * @param {{force?: (e: object) => boolean, background?: (e: object) => boolean}} opts
+ *   force：无视描写设置、必须描写的事件（如用户点了「生成描写」的交战）；
+ *   background：只作为背景信息一句带过的事件（即使关闭了「简要告知」也会附上）
  */
-export function composeMessage(battle, events, settings, note = '', { force } = {}) {
+export function composeMessage(battle, events, settings, note = '', { force, background } = {}) {
     const n = settings.narration;
     const narrate = [], brief = [];
     for (const e of events) {
-        if (force?.(e) || shouldNarrate(e, n)) narrate.push(formatEvent(e));
-        else if (n.brief) {
+        const bg = !force?.(e) && background?.(e);
+        if (!bg && (force?.(e) || shouldNarrate(e, n))) narrate.push(formatEvent(e));
+        else if (n.brief || bg) {
             const s = briefEvent(e);
             if (s) brief.push(s);
         }

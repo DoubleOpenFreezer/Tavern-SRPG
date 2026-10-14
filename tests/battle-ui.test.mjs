@@ -376,11 +376,12 @@ test('选择攻击对象只显示预览，取消不结算，确认战斗后才�
     assert.equal(app.bs.engagement, null);
 });
 
-test('战斗并生成描写只发送本次交战，先前待发送行动保留', async t => {
+test('战斗并生成描写详细描写本次交战，先前待发送行动作为背景一并发送后清空', async t => {
     const { app, root, context, click } = setupExchange(t);
     const sent = [];
     const input = { value: '', dispatchEvent() {} };
-    document.getElementById = id => id === 'send_textarea' ? input : id === 'send_but' ? { click: () => sent.push(input.value) } : null;
+    // 与酒馆一致：发送后清空输入框
+    document.getElementById = id => id === 'send_textarea' ? input : id === 'send_but' ? { click: () => { sent.push(input.value); input.value = ''; } } : null;
     const b = context.chatMetadata[META_KEY];
     const oldPending = [...b.pending];
     let board = find(root, n => n.classes.has('tsrpg-board'));
@@ -390,10 +391,26 @@ test('战斗并生成描写只发送本次交战，先前待发送行动保留',
     board.listeners.mousedown({ button: 0, target: { closest: () => board.children[1] } });
     await click('战斗并生成描写');
     assert.equal(sent.length, 1);
-    assert.match(sent[0], /勇者.*兽人.*20 点伤害.*反击/);
-    assert.ok(!sent[0].includes('任务：'));
-    assert.deepEqual(b.pending, oldPending);
-    assert.equal(b.log.length, 1);
+    const [need, bg = ''] = sent[0].split('【背景信息');
+    assert.match(need, /勇者.*兽人.*20 点伤害.*反击/);
+    assert.ok(!need.includes('任务：'), '先前的行动不要求详细描写');
+    assert.ok(bg.includes('任务：'), '先前的行动作为背景附上');
+    assert.deepEqual(b.pending, []);
+    assert.equal(b.log.length, oldPending.length + 1);
+
+    // 下次发送只包含之后的行动
+    app.settings.send.mode = 'send';
+    b.units[0].acted = false; b.units[0].moved = false;
+    app.render();
+    board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[0] } });
+    click('原地行动');
+    click('待机');
+    click('发送给 LLM');
+    assert.equal(sent.length, 2);
+    assert.ok(!sent[1].includes('20 点伤害'), '不重复已描写的交战');
+    assert.ok(!sent[1].includes('任务：'));
+    assert.match(sent[1], /原地待命/);
 });
 
 for (const response of ['反击', '防御']) {
@@ -515,7 +532,7 @@ test('单位特质先选择再编辑，模板与自定义组合保存且切换�
 });
 
 for (const reaction of ['反击', '防御']) {
-    test(`受击可选择${reaction}并生成描写，仅发送本回合选中的交战`, async t => {
+    test(`受击可选择${reaction}并生成描写：详细描写选中的交战，其余行动作为背景一并发送`, async t => {
         const { app, context, click } = setupExchange(t);
         app.settings.ui.confirmDefense = true;
         app.settings.send.autoOnEndTurn = true;
@@ -527,13 +544,13 @@ for (const reaction of ['反击', '防御']) {
         await waitForReaction(app);
         find(app.panel, n => n.tag === 'button' && n.textContent === `${reaction}并生成描写`).listeners.click();
         await run;
-        assert.equal(sent.length, 1);
-        assert.match(sent[0], /兽人.*勇者/);
-        assert.equal(sent[0].includes('任务：'), false);
+        assert.equal(sent.length, 1, '不再额外自动发送整个回合');
+        const [need, bg = ''] = sent[0].split('【背景信息');
+        assert.match(need, /兽人.*勇者/);
+        assert.equal(need.includes('任务：'), false);
+        assert.ok(oldPending.some(e => e.type === 'mission') && bg.includes('任务：'));
         assert.equal(b.units[0].hp, reaction === '反击' ? 80 : 90);
-        assert.equal(b.pending.some(e => e.type === 'attack'), false);
-        assert.ok(oldPending.every(e => b.pending.includes(e)));
-        assert.ok(b.pending.some(e => e.type === 'phase'));
+        assert.deepEqual(b.pending, [], '已发送的行动不会留到下次');
         assert.equal(app.bs.busy, null);
     });
 }
