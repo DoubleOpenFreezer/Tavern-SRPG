@@ -1,5 +1,5 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
-import { h, add, clear, toast, button, select, renderBoard, textArea, textDialog, field, numInput, checkbox } from './dom.js';
+import { h, add, clear, toast, button, select, renderBoard, renderToken, setTokenPreview, textArea, textDialog, field, numInput, checkbox } from './dom.js';
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
@@ -365,7 +365,20 @@ function onHover(app, b, x, y, refs) {
         preview = `${p.firstStrike ? `${at.name}先攻：命中 ${p.counterHit}%，伤害 ${p.counter}${p.counter >= u.hp ? '（可能先被击败，无法出手）' : ''}；存活后` : ''}攻击 ${at.name}：命中 ${p.hit}%，伤害 ${p.damage}${killed ? '（可击败）' : ''}`
             + (!p.firstStrike && p.counter ? `；反击${killed ? '（若未击败）' : ''}：命中 ${p.counterHit}%，伤害 ${p.counter}` : '');
     }
-    refs.preview.textContent = preview || '';
+    refs.preview.textContent = ui.engagement ? '' : preview || '';
+    // 悬停在可攻击的目标上：棋子血条闪烁显示预计 HP 变化；离开后恢复战斗确认中的预览
+    let hoverMap = null;
+    if (u && ui.mode === 'skill') {
+        const sk = u.skills.find(s => s.id === ui.skillId);
+        if (sk && sk.kind !== 'support' && E.skillTargetTiles(b, u, sk).some(([tx, ty]) => tx === x && ty === y)) hoverMap = forecastHp(b, u, sk, E.skillAffected(b, u, sk, x, y), app.data.rules);
+    } else if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
+        hoverMap = forecastHp(b, u, null, [at], app.data.rules);
+    }
+    const shown = hoverMap || refs.basePreview;
+    refs.board.querySelectorAll?.('.tsrpg-token[data-uid]').forEach(tok => {
+        const unit = E.getUnit(b, tok.dataset.uid);
+        if (unit) setTokenPreview(tok, unit, shown?.get(unit.uid));
+    });
     clear(refs.hoverInfo);
     const show = at && at !== u ? at : null;
     if (show) refs.hoverInfo.append(unitCard(b, show, true, app.data.rules));
@@ -499,13 +512,17 @@ function renderActive(app, root, b) {
     const refs = {};
     refs.preview = h('div.tsrpg-preview');
     refs.hoverInfo = h('div.tsrpg-hoverinfo');
+    // 战斗确认时，在棋子血条上预览这次交战的 HP 变化
+    refs.basePreview = ui.engagement && !ui.playback ? engagementForecast(app, b) : null;
     refs.board = renderBoard({
         w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312),
         terrain: id => b.terrains[id] || { name: id, color: '#999' },
-        units: E.alive(b),
+        // 回放中被击败的单位在倒下那一帧仍然显示（淡出）
+        units: ui.playback ? b.units.filter(x => (x.hp > 0 && !x.retreated) || ui.playback.effects?.some(e => e.uid === x.uid && e.ko)) : E.alive(b),
         marks: computeMarks(b, ui),
         effects: ui.playback?.effects,
         area: ui.playback?.area,
+        preview: refs.basePreview,
         selected: ui.sel,
         onCell: (x, y) => onCell(app, b, x, y),
         onHover: (x, y) => onHover(app, b, x, y, refs),
@@ -520,7 +537,8 @@ function renderActive(app, root, b) {
                 quietTurnButton(app, b), pauseButton(app, b)),
             h('div.tsrpg-board-wrap', refs.board),
             processStatus(app),
-            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${E.toughApplies(u, app.data.rules) ? ` · 韧性 ${E.toughLeft(u)}/${E.toughMax(u)}` : ''}${u.acted ? ' · 已行动' : ''}`) : null,
+            u ? h('div.tsrpg-mini-unit', renderToken(u), h('b', u.name), hpForecast(u, u.hp),
+                h('small.tsrpg-muted', `${E.toughApplies(u, app.data.rules) ? `韧性 ${E.toughLeft(u)}/${E.toughMax(u)}` : ''}${u.acted ? ' · 已行动' : ''}`)) : null,
             ui.busy ? null : ui.cheat ? manualPanel(app, b) : ui.engagement ? engagementPanel(app, b) : actionPanel(app, b, u),
             refs.preview,
             h('div.tsrpg-row',
@@ -589,13 +607,85 @@ function renderActive(app, root, b) {
 
 const approx = value => Number(value.toFixed(1));
 
+/** 预览血条：当前 HP，将损失的部分闪烁（回复为绿色），文字显示变化 */
+function hpForecast(u, after) {
+    const max = Math.max(1, u.maxHp);
+    const next = Math.max(0, Math.min(max, after));
+    const pct = v => `${Math.max(0, Math.min(100, (v / max) * 100))}%`;
+    const lo = Math.min(next, u.hp), hi = Math.max(next, u.hp);
+    const ko = next <= 0 && u.hp > 0;
+    // 将损失 / 回复的部分直接画在血条上（标出 −伤害；击败时标出「击败」）
+    const chunk = hi > lo ? h(`div.tsrpg-fbar-${next < u.hp ? 'loss' : 'gain'}`, { style: { left: pct(lo), width: pct(hi - lo) } },
+        h('span', ko ? '击败' : `${next < u.hp ? '−' : '+'}${hi - lo}`)) : null;
+    return h(`div.tsrpg-fbar.side-${u.side}${ko ? '.ko' : ''}`, { title: `HP ${u.hp}/${u.maxHp}${next !== u.hp ? ` → ${next}` : ''}` },
+        h('div.tsrpg-fbar-keep', { style: { width: pct(lo) } }), chunk,
+        chunk ? null : h('span.tsrpg-fbar-text', `${u.hp}/${u.maxHp}`));
+}
+
+/** 交战预测的一侧：头像、名字、HP 变化，下面是大血条和一个小标签 */
+function forecastSide(u, after, tag, rules, cls = '') {
+    const next = Math.max(0, after);
+    return h(`div.tsrpg-fc-side${cls}`,
+        h('div.tsrpg-fc-name', renderToken(u), h('b', u.name),
+            h('small.tsrpg-fc-hp', next === u.hp ? `${u.hp}/${u.maxHp}` : `${u.hp} → ${next}`),
+            E.toughApplies(u, rules) ? h('small.tsrpg-fc-tough', { title: '韧性：防御或反击各消耗1点' }, `🛡${E.toughLeft(u)}`) : null),
+        hpForecast(u, after),
+        tag ? h('div.tsrpg-fc-tag', tag) : null);
+}
+
+/** 一次交战的预计 HP（按命中计算；被援护时由援护者承受；反击 / 先攻计入攻击者） */
+function forecastHp(b, actor, skill, targets, rules) {
+    const map = new Map();
+    let actorHp = actor.hp;
+    for (const t of targets) {
+        const c = E.coverFor(b, actor, t, skill || null);
+        const v = c ? c.unit : t;
+        const p = exchangePreview(b, actor, v, rules, skill || null, E.defaultReaction(b, actor, v, rules, skill || null, !!c));
+        const after = Math.max(0, (map.get(v.uid) ?? v.hp) - (p.hit > 0 ? p.damage : 0));
+        map.set(v.uid, after);
+        if (p.responds && (p.firstStrike || after > 0)) actorHp -= p.counter;
+    }
+    if (actorHp !== actor.hp) map.set(actor.uid, Math.max(0, actorHp));
+    return map;
+}
+
+function engagementForecast(app, b) {
+    const plan = app.bs.engagement;
+    const actor = E.getUnit(b, plan.unitId);
+    if (!actor) return null;
+    const skill = plan.skillId && actor.skills.find(sk => sk.id === plan.skillId);
+    const target = plan.targetId && E.getUnit(b, plan.targetId);
+    const targets = skill ? E.skillAffected(b, actor, skill, plan.x, plan.y) : target ? [target] : [];
+    return forecastHp(b, actor, skill || null, targets, app.data.rules);
+}
+
 function previewCard(b, actor, target, rules, skill, reaction, defendingView = false) {
     const p = exchangePreview(b, actor, target, rules, skill, reaction);
-    return h('div.tsrpg-exchange-card',
-        h('b', `${target.name} · HP ${target.hp}/${target.maxHp}${E.toughApplies(target, rules) ? ` · 韧性 ${E.toughLeft(target)}/${E.toughMax(target)}` : ''}`),
-        h('div', `${defendingView ? '预计承受：' : ''}命中伤害 ${p.damage} · 命中率 ${p.hit}% · 期望伤害 ≈${approx(p.expectedDamage)}`),
-        h('div.tsrpg-muted', p.responds ? `${p.firstStrike ? `${defendingView ? '我方' : '对方'}先攻` : `${defendingView ? '我方' : ''}存活后反击`}：伤害 ${p.counter} · 命中率 ${p.counterHit}% · 期望 ≈${approx(p.expectedCounter)}` : reaction === 'defend' ? `${defendingView ? '我方' : '对方'}防御：伤害已计入减伤，不反击` : !target.object && E.isFoe(actor, target) && !E.canBrace(target, rules) ? `${defendingView ? '我方' : '对方'}韧性耗尽：无法防御或反击，承受全额伤害` : defendingView && reaction === 'none' ? `承受：全额伤害，不反击${E.toughApplies(target, rules) ? '，不消耗韧性' : ''}` : '没有反击'),
+    const targetAfter = Math.max(0, target.hp - (p.hit > 0 ? p.damage : 0));
+    const countered = p.responds && (p.firstStrike || targetAfter > 0);
+    const actorAfter = countered ? Math.max(0, actor.hp - p.counter) : actor.hp;
+    // 目标一侧的标签：命中率，以及防御 / 韧性耗尽等状态
+    const state = reaction === 'defend' && !target.object ? ' · 防御' : !target.object && E.isFoe(actor, target) && !E.canBrace(target, rules) ? ' · 韧性耗尽' : '';
+    const hit = forecastSide(target, targetAfter, `命中 ${p.hit}%${state}`, rules, defendingView ? '' : '.right');
+    const strikeTag = countered ? `${p.firstStrike ? '先攻' : '反击'} 命中 ${p.counterHit}%` : p.responds ? `击败则无反击（否则反击 ${p.counter}）` : '无反击';
+    const strike = forecastSide(actor, actorAfter, strikeTag, rules, defendingView ? '.right' : '');
+    return h('div.tsrpg-exchange-card', { title: `命中伤害 ${p.damage}，命中率 ${p.hit}%，期望伤害 ≈${approx(p.expectedDamage)}${p.responds ? `；${p.firstStrike ? '先攻' : '存活后反击'} ${p.counter}，命中率 ${p.counterHit}%` : ''}` },
+        h('div.tsrpg-forecast', defendingView ? [hit, h('div.tsrpg-fc-vs', '⚔'), strike] : [strike, h('div.tsrpg-fc-vs', '⚔'), hit]),
         p.firstStrike && p.counter >= actor.hp ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
+}
+
+/** 多目标技能：每个目标一行血条预览，攻击者合计反击 */
+function multiForecast(b, actor, skill, targets, rules) {
+    const map = forecastHp(b, actor, skill, targets, rules);
+    return h('div.tsrpg-exchange-card.tsrpg-multi-forecast',
+        forecastSide(actor, map.get(actor.uid) ?? actor.hp, map.has(actor.uid) ? '会受到反击' : '无反击', rules),
+        targets.map(t => {
+            const c = E.coverFor(b, actor, t, skill);
+            const v = c ? c.unit : t;
+            const p = exchangePreview(b, actor, v, rules, skill, E.defaultReaction(b, actor, v, rules, skill, !!c));
+            return h('div.tsrpg-fc-row', renderToken(v), h('b', v.name), hpForecast(v, map.get(v.uid) ?? v.hp),
+                h('small', `${c ? `援护${t.name} · ` : ''}${E.isFoe(actor, v) ? '' : '误伤 · '}命中 ${p.hit}%${p.responds ? ` · 反击 ${p.counter}` : ''}`));
+        }));
 }
 
 function engagementPanel(app, b) {
@@ -609,14 +699,14 @@ function engagementPanel(app, b) {
         h('div.tsrpg-section-title', '战斗确认'),
         h('b', `${actor?.name || '单位'} → ${skill ? skill.name : target?.name || '目标'}`),
         skill ? h('small.tsrpg-muted', skillSummary(skill)) : null,
-        targets.map(t => {
+        targets.length > 1 ? multiForecast(b, actor, skill, targets, app.data.rules) : targets.map(t => {
             const c = covered(t);
             if (!c) return previewCard(b, actor, t, app.data.rules, skill, E.defaultReaction(b, actor, t, app.data.rules, skill));
             return [h('div.tsrpg-warn', `【援护】${c.unit.name}将替${t.name}承受这次攻击（不反击）`),
                 previewCard(b, actor, c.unit, app.data.rules, skill, E.defaultReaction(b, actor, c.unit, app.data.rules, skill, true))];
         }),
         !targets.length ? h('div.tsrpg-warn', '范围内没有目标；执行仍会消耗技能。') : null,
-        h('small.tsrpg-muted', '期望伤害＝命中时伤害×命中率，未计随机浮动；反击 / 先攻以能出手为前提。敌方默认选择可用的反击，否则防御；每次防御或反击消耗1点韧性，耗尽后只能承受。'),
+        h('small.tsrpg-muted', '血条上的斜纹＝命中时将损失的 HP；悬停卡片可查看具体数值。'),
         h('div.tsrpg-row',
             button('战斗', () => performEngagement(app, b, false), { icon: 'fa-khanda', cls: 'primary' }),
             button('战斗并生成描写', () => performEngagement(app, b, true), { icon: 'fa-comment' }),
@@ -703,7 +793,10 @@ function askReaction(app, b, request) {
         const counterNarrate = responds ? button('反击并生成描写', () => generate('counter'), { icon: 'fa-comment' }) : null;
         const endureNarrate = button('承受并生成描写', () => generate('none'), { icon: 'fa-comment' });
         const cancel = button('取消本次回合', () => settle(null));
-        const choices = [defend, counter, endure, defendNarrate, counterNarrate, endureNarrate, cancel].filter(Boolean);
+        const choices = [counter, counterNarrate, defend, defendNarrate, endure, endureNarrate, cancel].filter(Boolean);
+        const option = (title, reaction, buttons) => h('div.tsrpg-option',
+            h('div.tsrpg-option-head', h('b', title), h('div.tsrpg-option-buttons', buttons)),
+            previewCard(b, attacker, target, app.data.rules, skill, reaction, true));
         ui.busy = `等待${target.name}选择${!braced ? '承受' : responds ? '反击、防御或承受' : '防御或承受'}`;
         const overlay = h('div.tsrpg-overlay', { onkeydown: e => {
             if (e.key === 'Escape') { e.preventDefault(); settle(null); }
@@ -715,18 +808,14 @@ function askReaction(app, b, request) {
         } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': braced ? '选择反击、防御或承受' : '承受攻击' },
             h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${cover ? `${cover.name}，由${target.name}援护承受` : target.name}`),
             cover ? h('div.tsrpg-muted', `援护：${target.name}替${cover.name}挡下这次攻击，可以防御或承受，不能反击。`) : null,
-            !braced ? [
-                h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`),
-                previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
-            ] : [
-                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : cover ? null : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。'),
-                h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
-                h('b', '选择承受时'), previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
-                h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。${tough ? `防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）；承受不消耗韧性，留给更危险的攻击。` : ''}`),
-            ],
-            h('small.tsrpg-muted', '生成描写：本回合结算完成后发送，选择生成的交战会详细描写，自上次发送以来的其他行动作为背景信息一并带过。'),
-            h('div.tsrpg-row', defend, counter, endure),
-            h('div.tsrpg-row', defendNarrate, counterNarrate, endureNarrate, cancel),
+            !braced ? h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`)
+                : !responds && !cover ? h('small.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。') : null,
+            // 每个选项一张卡片：标题旁就是按钮，下面是双方血条预览
+            responds ? option('选择反击时', 'counter', [counter, counterNarrate]) : null,
+            braced ? option('选择防御时', 'defend', [defend, defendNarrate]) : null,
+            option('选择承受时', 'none', [endure, endureNarrate]),
+            h('small.tsrpg-muted', `${braced ? '防御减伤并放弃反击；反击需要受击后存活。' : ''}${braced && tough ? `防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}），承受不消耗。` : ''}「…并生成描写」：回合结算后详细描写这次交战。`),
+            h('div.tsrpg-row.tsrpg-option-foot', cancel),
         ));
         ui.cancelReaction = () => settle(null);
         app.panel.classList.add('tsrpg-reaction-open');

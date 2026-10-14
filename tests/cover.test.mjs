@@ -96,3 +96,17 @@ test('AI 会在同伴受威胁时使用范围援护', () => {
     const opts = E.aiOptions(b, b.units[1], rules, 30);
     assert.ok(opts.some(p => p.kind === 'skill' && p.skill.id === 'a' && p.score > 0));
 });
+
+test('范围援护总是挂在施法者身上：技能选中友军时，也是施法者替周围友军承受', () => {
+    const shield = makeSkill({ id: 'sh', name: '此身为盾', kind: 'support', target: 'ally', rangeMin: 1, rangeMax: 3, effects: [{ type: 'cover_area', value: 2, turns: 2 }] });
+    const b = battle([tank({ name: '瑟蕾娜', skills: [shield] }), makeUnit({ id: 'dummy', name: '假想保护目标', side: 'ally', hp: 30, def: 0 }), orc()], [[2, 2], [1, 2], [0, 2]]);
+    const [t, dummy, o] = b.units;
+    const ev = E.doSkill(b, t, t.skills[0], 1, 2, rules, fixed);
+    assert.ok(E.hasStatus(t, 'cover_area'), '施法者获得范围援护');
+    assert.ok(!E.hasStatus(dummy, 'cover_area'), '被选中的友军不会变成援护者');
+    assert.match(formatEvent(ev), /由瑟蕾娜以自身为中心展开【范围援护2格】/);
+    const hit = E.doAttack(b, o, dummy, rules, fixed, 'defend');
+    assert.equal(hit.target.uid, t.uid);
+    assert.equal(dummy.hp, 30);
+    assert.ok(t.hp < 100);
+});

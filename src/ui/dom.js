@@ -129,6 +129,7 @@ const SIDE_COLORS = { player: '#2f6fd6', enemy: '#c62828', ally: '#2e9d4a' };
  * @param {(x:number,y:number,e:MouseEvent)=>void} [o.onHover]
  * @param {(x:number,y:number,e:MouseEvent)=>void} [o.onContext]
  * @param {string} [o.selected] 选中单位 uid
+ * @param {Map<string,number>} [o.preview] 预计 HP（uid -> 结算后 HP），在棋子血条上闪烁显示损失
  */
 export function renderBoard(o) {
     const grid = h('div.tsrpg-board', {
@@ -136,7 +137,7 @@ export function renderBoard(o) {
     });
     const byPos = new Map((o.units || []).map(u => [`${u.x},${u.y}`, u]));
     for (const effect of o.effects || []) {
-        if (effect.cls !== 'm-acting') continue;
+        if (effect.cls !== 'm-acting' && effect.cls !== 'm-lunge') continue;
         const actor = (o.units || []).find(u => u.uid === effect.uid);
         if (actor) byPos.set(`${actor.x},${actor.y}`, actor);
     }
@@ -151,13 +152,17 @@ export function renderBoard(o) {
             }, t.symbol ? h('span.tsrpg-sym', t.symbol) : null);
             for (const m of o.marks?.get(key) || []) cell.classList.add(m);
             if (o.area?.some(([ax, ay]) => ax === x && ay === y)) cell.classList.add('m-area');
+            let drainFrom = null;
             for (const effect of o.effects || []) {
                 if (effect.x !== x || effect.y !== y) continue;
                 if (effect.cls) cell.classList.add(effect.cls);
-                if (effect.text) cell.append(h('span.tsrpg-damage-number', effect.text));
+                if (effect.ko) cell.classList.add('m-ko');
+                if (effect.lx != null) { cell.style.setProperty?.('--lx', effect.lx); cell.style.setProperty?.('--ly', effect.ly); }
+                if (effect.hpFrom != null) drainFrom = effect.hpFrom;
+                if (effect.text) cell.append(h(`span.tsrpg-damage-number.${numberKind(effect.text)}`, effect.text));
             }
             const u = byPos.get(key);
-            if (u) cell.append(renderToken(u, u.uid && u.uid === o.selected));
+            if (u) cell.append(renderToken(u, u.uid && u.uid === o.selected, { drainFrom, previewHp: o.preview?.get(u.uid) }));
             grid.append(cell);
         }
     }
@@ -178,14 +183,32 @@ export function renderBoard(o) {
     return grid;
 }
 
-export function renderToken(u, selected = false) {
+/** 伤害数字的样式：伤害 / 回复 / 未命中 / 其他 */
+function numberKind(text) {
+    return text.startsWith('+') ? 'heal' : text.startsWith('−') ? 'dmg' : text === 'MISS' ? 'miss' : 'info';
+}
+
+const hpPct = (u, hp) => `${Math.max(0, Math.min(100, (hp / Math.max(1, u.maxHp)) * 100))}%`;
+
+/**
+ * @param {{drainFrom?: number|null, previewHp?: number}} [fx]
+ *   drainFrom：回放时扣血前的 HP，血条显示掉血动画；previewHp：预计结算后的 HP，闪烁显示将损失的部分
+ */
+export function renderToken(u, selected = false, fx = {}) {
     const color = u.color || SIDE_COLORS[u.side] || '#666';
-    const pct = u.maxHp ? Math.max(0, Math.min(100, (u.hp / u.maxHp) * 100)) : 100;
     const el = h(`div.tsrpg-token.side-${u.side}`, {
+        'data-uid': u.uid || '',
         style: { background: color, color: contrast(color) },
         title: u.name + (u.maxHp ? ` HP ${u.hp}/${u.maxHp}` : ''),
     }, h('span.tsrpg-token-icon', u.icon || (u.name || '?').slice(0, 1)));
-    if (u.maxHp) el.append(h('div.tsrpg-hpbar', h('div', { style: { width: `${pct}%` } })));
+    if (u.maxHp) {
+        const bar = h('div.tsrpg-hpbar', h('div.fill', { style: { width: hpPct(u, u.hp) } }));
+        const from = fx.drainFrom;
+        if (from != null && from > u.hp) bar.append(h('div.trail', { style: { left: hpPct(u, u.hp), width: hpPct(u, from - u.hp) } }));
+        if (from != null && from < u.hp) bar.append(h('div.gain', { style: { left: hpPct(u, from), width: hpPct(u, u.hp - from) } }));
+        el.append(bar);
+        setTokenPreview(el, u, fx.previewHp);
+    }
     if (u.kind === 'object' || u.object) el.classList.add('object');
     if (u.keyTarget) el.append(h('span.tsrpg-key', { title: '关键目标' }, '★'));
     const st = u.statuses || [];
@@ -201,4 +224,16 @@ export function renderToken(u, selected = false) {
     if (u.acted) el.classList.add('acted');
     if (selected) el.classList.add('selected');
     return el;
+}
+
+/** 在棋子血条上标出预计损失 / 回复（闪烁）；hp 为 null 时清除。预计被击败的棋子会发出红光 */
+export function setTokenPreview(token, u, hp) {
+    const bar = token.querySelector?.('.tsrpg-hpbar') ?? token.children?.find?.(c => c.classes?.has('tsrpg-hpbar'));
+    bar?.querySelectorAll?.('.ghost').forEach(g => g.remove());
+    token.classList.remove('preview-ko');
+    if (!bar || hp == null || hp === u.hp) return;
+    const next = Math.max(0, Math.min(u.maxHp, hp));
+    const lo = Math.min(next, u.hp), hi = Math.max(next, u.hp);
+    bar.append(h(`div.ghost.${next < u.hp ? 'loss' : 'gain'}`, { style: { left: hpPct(u, lo), width: hpPct(u, hi - lo) } }));
+    if (next <= 0) token.classList.add('preview-ko');
 }

@@ -388,8 +388,13 @@ test('选择攻击对象只显示预览，取消不结算，确认战斗后才�
     board = find(root, n => n.classes.has('tsrpg-board'));
     board.listeners.mousedown({ button: 0, target: { closest: () => board.children[1] } });
     assert.equal(hero.hp, 100); assert.equal(foe.hp, 100);
-    assert.ok(root.textContent.includes('期望伤害'));
-    assert.ok(root.textContent.includes('存活后反击'));
+    // 血条预览：交战双方的 HP 变化与血条上标出的伤害，以及棋盘上闪烁的预计损失
+    assert.equal(root.textContent.split('100 → 80').length - 1, 2, '双方各显示 HP 变化');
+    assert.equal(root.textContent.split('−20').length - 1, 2, '双方血条上标出将损失的 HP');
+    assert.ok(root.textContent.includes('反击 命中 100%'));
+    const ghosts = [];
+    find(root, n => { if (n.classes.has('ghost')) ghosts.push(n); return false; });
+    assert.equal(ghosts.length, 2, '棋盘上攻击者和目标的血条都标出预计损失');
     click('取消');
     assert.equal(hero.hp, 100); assert.equal(foe.hp, 100);
     board = find(root, n => n.classes.has('tsrpg-board'));

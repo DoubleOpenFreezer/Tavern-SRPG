@@ -308,6 +308,8 @@ export class App {
             h(`div.tsrpg-tab${id === s.ui.tab ? '.active' : ''}`, { onclick: () => this.setTab(id), title: label },
                 h(`i.fa-solid.${icon}`), h('span', label))));
         const scroll = this.body.scrollTop;
+        // 编辑器左右两栏各自滚动：重新渲染后恢复同一列表 / 同一条目的滚动位置
+        const inner = new Map([...this.body.querySelectorAll?.('[data-scroll]') || []].map(el => [el.dataset.scroll, el.scrollTop]));
         const renderer = s.ui.layout === 'compact' ? renderBattleTab : TABS.find(t => t[0] === s.ui.tab)[3];
         const bound = ST.boundProfile(s);
         if (renderer === renderBattleTab && bound && s.activeProfile !== bound.id) {
@@ -320,6 +322,7 @@ export class App {
             clear(this.body).append(h('div.tsrpg-empty', `界面渲染出错：${err.message || err}`));
         }
         this.body.scrollTop = scroll;
+        this.body.querySelectorAll?.('[data-scroll]').forEach(el => { if (inner.has(el.dataset.scroll)) el.scrollTop = inner.get(el.dataset.scroll); });
         this.updateFab();
     }
 

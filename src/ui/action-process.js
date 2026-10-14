@@ -4,14 +4,21 @@ import { getBattle } from '../st.js';
 export function* actionFrames(before, after, events) {
     const state = structuredClone(before);
     const unit = uid => state.units.find(u => u.uid === uid);
-    const effect = (u, cls, text = '') => u ? { uid: u.uid, x: u.x, y: u.y, cls, text } : null;
+    const effect = (u, cls, text = '', extra = {}) => u ? { uid: u.uid, x: u.x, y: u.y, cls, text, ...extra } : null;
+    // 攻击者朝目标方向突进
+    const lunge = (actor, target) => actor && target
+        ? effect(actor, 'm-lunge', '', { lx: Math.sign(target.x - actor.x), ly: Math.sign(target.y - actor.y) })
+        : effect(actor, 'm-acting');
+    // 扣血 / 回复：血条从原值变化到新值，被击败的单位淡出
+    const hpFx = (u, from) => ({ hpFrom: from, ko: from > 0 && u.hp <= 0 });
     const frame = (label, effects = [], area = [], duration = 1) => ({ battle: structuredClone(state), label, effects: effects.filter(Boolean), area, duration });
     function* hit(actorId, targetId, result, label) {
         const actor = unit(actorId), target = unit(targetId);
         if (!target || !result) return;
-        yield frame(label, [effect(actor, 'm-acting'), effect(target, 'm-impact')]);
+        yield frame(label, [lunge(actor, target), effect(target, 'm-impact')]);
+        const from = target.hp;
         target.hp = result.hpAfter;
-        yield frame(label, [effect(target, result.reaction === 'defend' ? 'm-guard' : 'm-impact', result.hit === false || result.missed ? 'MISS' : `${result.hpAfter > result.hpBefore ? '+' : '−'}${Math.abs(result.hpAfter - result.hpBefore)}`)]);
+        yield frame(label, [effect(target, result.reaction === 'defend' ? 'm-guard' : 'm-impact', result.hit === false || result.missed ? 'MISS' : `${result.hpAfter > result.hpBefore ? '+' : '−'}${Math.abs(result.hpAfter - result.hpBefore)}`, hpFx(target, from))]);
     }
     for (const e of events.filter(Boolean)) {
         const actor = unit(e.actor?.uid);
@@ -47,9 +54,10 @@ export function* actionFrames(before, after, events) {
                         if (ef.type === 'recall' && ef.to) { target.x = ef.to.x; target.y = ef.to.y; }
                         if (ef.type === 'refresh' && !ef.failed) { target.acted = false; target.moved = false; }
                     }
+                    const from = target.hp;
                     target.hp = r.hpAfter;
                     const delta = r.hpAfter - r.hpBefore;
-                    effects.push(effect(target, r.reaction === 'defend' ? 'm-guard' : 'm-impact', r.missed ? 'MISS' : delta ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : '效果'));
+                    effects.push(effect(target, r.reaction === 'defend' ? 'm-guard' : 'm-impact', r.missed ? 'MISS' : delta ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : '效果', hpFx(target, from)));
                 }
                 if (actor && !e.skill.quick) { actor.moved = true; actor.acted = true; }
                 yield frame(`${e.skill.name} 命中${e.results.length}个目标`, effects, e.area || []);

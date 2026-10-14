@@ -192,7 +192,7 @@ export const EFFECTS = {
     regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
     taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
     cover: { name: '援护', group: '增益', noValue: true, help: '施法者替目标承受下一次单体攻击（普通攻击或单体伤害技能），承受一次后消失；援护者不反击，可以防御。不能援护自己' },
-    cover_area: { name: '范围援护', group: '增益', value: 2, unit: '格', flat: true, help: '获得者周围此范围内的友军受到单体攻击时，都由获得者承受（不限次数）；不反击，可以防御。MAP / 范围攻击不会被援护' },
+    cover_area: { name: '范围援护', group: '增益', value: 2, unit: '格', flat: true, help: '总是作用于施法者（无论技能选择谁）：施法者周围此范围内的友军受到单体攻击时，都由施法者承受（不限次数）；不反击，可以防御。MAP / 范围攻击不会被援护' },
     atk_down: { name: '攻击力下降', group: '减益', stat: 'atk', sign: -1, value: 30, unit: '%', debuff: true },
     matk_down: { name: '魔攻下降', group: '减益', stat: 'matk', sign: -1, value: 30, unit: '%', debuff: true },
     def_down: { name: '防御力下降', group: '减益', stat: 'def', sign: -1, value: 30, unit: '%', debuff: true },
@@ -670,6 +670,15 @@ function applyEffects(b, caster, t, effects, rules, rng) {
             out.push({ type: e.type, label: `受${caster.name}援护`, turns });
             continue;
         }
+        if (e.type === 'cover_area') {
+            // 范围援护以施法者为中心，由施法者承受；技能选中的是友军时也挂在施法者身上
+            const turns = Math.max(1, Number(e.turns) || 1);
+            caster.statuses ||= [];
+            caster.statuses = caster.statuses.filter(x => x.type !== 'cover_area');
+            caster.statuses.push({ type: 'cover_area', value, turns, srcSide: caster.side });
+            out.push({ type: e.type, label: effectLabel({ type: e.type, value }), turns, holder: caster.name, value });
+            continue;
+        }
         if (e.type === 'heal' || e.type === 'heal_pct') {
             const amount = e.type === 'heal'
                 ? calcHeal(caster, t, value, rules, rng)
@@ -899,9 +908,10 @@ function effectScore(b, caster, t, e, rules) {
             return t !== caster && near && caster.hp > t.hp && t.hp / t.maxHp < 0.7 ? 9 : 0;
         }
         case 'cover_area': {
-            if (hasStatus(t, 'cover_area') || t.hp / t.maxHp < 0.5) return 0;
+            // 总是挂在施法者身上，按施法者周围受威胁的友军估值
+            if (t !== caster || hasStatus(caster, 'cover_area') || caster.hp / caster.maxHp < 0.5) return 0;
             const r = Math.max(0, v);
-            const guarded = alive(b).filter(a => a !== t && team(a) === team(t) && dist(a.x, a.y, t.x, t.y) <= r
+            const guarded = alive(b).filter(a => a !== caster && team(a) === team(caster) && dist(a.x, a.y, caster.x, caster.y) <= r
                 && alive(b).some(f => isFoe(f, a) && !f.object && dist(f.x, f.y, a.x, a.y) <= stat(f, 'mov') + f.rangeMax + 1)).length;
             return Math.min(16, guarded * 4);
         }

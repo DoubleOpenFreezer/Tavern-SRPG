@@ -36,7 +36,7 @@ export function renderUnitsTab(app, root) {
         const u = makeUnit({ side, name: side === 'enemy' ? '新敌人' : side === 'ally' ? '新友军' : '新角色' });
         app.data.units.push(u); ed.unitId = u.id; app.save(); app.render();
     };
-    const list = h('div.tsrpg-list',
+    const list = h('div.tsrpg-list', { 'data-scroll': 'units-list' },
         h('div.tsrpg-row',
             button('我方', () => add('player'), { icon: 'fa-plus' }),
             button('敌方', () => add('enemy'), { icon: 'fa-plus' }),
@@ -49,7 +49,7 @@ export function renderUnitsTab(app, root) {
         }),
     );
     root.append(profileNote(app));
-    root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', cur ? unitForm(app, cur) : h('div.tsrpg-empty', '新建一个单位开始吧。'))));
+    root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', { 'data-scroll': `units-form-${cur?.id || ''}` }, cur ? unitForm(app, cur) : h('div.tsrpg-empty', '新建一个单位开始吧。'))));
 }
 
 function unitForm(app, u) {
@@ -354,7 +354,8 @@ export function renderTerrainsTab(app, root) {
             h('span.tsrpg-swatch', { style: { background: t.color, color: contrast(t.color) } }, t.symbol || ''), h('span', t.name))),
     );
     root.append(profileNote(app));
-    root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', cur ? terrainForm(app, cur) : null)));
+    list.setAttribute('data-scroll', 'terrains-list');
+    root.append(h('div.tsrpg-editor', list, h('div.tsrpg-form', { 'data-scroll': `terrains-form-${cur?.id || ''}` }, cur ? terrainForm(app, cur) : null)));
 }
 
 function terrainForm(app, t) {
@@ -418,7 +419,8 @@ export function renderMapsTab(app, root) {
         app.data.maps.map(m => listItem(m.id === ed.mapId, () => { ed.mapId = m.id; app.render(); }, h('span', m.name), h('small.tsrpg-muted', ` ${m.w}×${m.h}`))),
     );
     root.append(profileNote(app));
-    root.append(h('div.tsrpg-editor.wide', list, h('div.tsrpg-form', cur ? mapForm(app, cur) : h('div.tsrpg-empty', '新建一张地图吧。'))));
+    list.setAttribute('data-scroll', 'maps-list');
+    root.append(h('div.tsrpg-editor.wide', list, h('div.tsrpg-form', { 'data-scroll': `maps-form-${cur?.id || ''}` }, cur ? mapForm(app, cur) : h('div.tsrpg-empty', '新建一张地图吧。'))));
 }
 
 function resizeMap(m, w, h2, fill) {
