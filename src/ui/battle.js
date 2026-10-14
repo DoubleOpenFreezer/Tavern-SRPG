@@ -11,7 +11,7 @@ import { exchangePreview } from '../exchange.js';
 import { recordCheckpoint, rewindBattle, checkpointTitle } from '../history.js';
 
 const PHASE = { player: '我方阶段', enemy: '敌方阶段', ally: '友军阶段' };
-const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动' };
+const AI_NAMES = { aggressive: '主动出击', defensive: '原地迎击', stationary: '固守不动', ranged: '远程游击', flee: '逃跑' };
 const KIND = { physical: '物理', magical: '魔法', support: '辅助' };
 
 /** 战场交互状态（不持久化） */
@@ -402,7 +402,9 @@ function statGrid(u) {
     if (u.object) return h('div.tsrpg-stats', cell('DEF', 'def'), cell('MDEF', 'mdef'));
     return h('div.tsrpg-stats',
         cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('AGI', 'agi'), cell('MOV', 'mov'),
-        h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))));
+        h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))),
+        h('div', { title: '每次防御或反击消耗1点，耗尽后只能承受伤害；己方阶段开始时回满' }, h('small', '韧性'),
+            h(`b${E.canBrace(u) ? '' : '.down'}`, `${E.toughLeft(u)}/${E.toughMax(u)}`)));
 }
 
 function actionPanel(app, b, u) {
@@ -453,6 +455,8 @@ function syncBindings(app, b) {
             u.wb = d.wb ? structuredClone(d.wb) : null;
             changed = true;
         }
+        // 更新前开始的战斗：单位没有韧性字段时按资料卡补上
+        if (u.toughMax == null && !u.object) { u.toughMax = E.unitTough(d); u.tough = u.toughMax; changed = true; }
         // AI 倾向随资料卡更新，已在场的单位也立即生效
         const reckless = d.mapReckless !== false;
         if (u.mapReckless !== reckless) { u.mapReckless = reckless; changed = true; }
@@ -497,7 +501,7 @@ function renderActive(app, root, b) {
                 quietTurnButton(app, b), pauseButton(app, b)),
             h('div.tsrpg-board-wrap', refs.board),
             processStatus(app),
-            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.acted ? ' · 已行动' : ''}`) : null,
+            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.object ? '' : ` · 韧性 ${E.toughLeft(u)}/${E.toughMax(u)}`}${u.acted ? ' · 已行动' : ''}`) : null,
             ui.busy ? null : ui.cheat ? manualPanel(app, b) : ui.engagement ? engagementPanel(app, b) : actionPanel(app, b, u),
             refs.preview,
             h('div.tsrpg-row',
@@ -569,9 +573,9 @@ const approx = value => Number(value.toFixed(1));
 function previewCard(b, actor, target, rules, skill, reaction, defendingView = false) {
     const p = exchangePreview(b, actor, target, rules, skill, reaction);
     return h('div.tsrpg-exchange-card',
-        h('b', `${target.name} · HP ${target.hp}/${target.maxHp}`),
+        h('b', `${target.name} · HP ${target.hp}/${target.maxHp}${target.object ? '' : ` · 韧性 ${E.toughLeft(target)}/${E.toughMax(target)}`}`),
         h('div', `${defendingView ? '预计承受：' : ''}命中伤害 ${p.damage} · 命中率 ${p.hit}% · 期望伤害 ≈${approx(p.expectedDamage)}`),
-        h('div.tsrpg-muted', p.responds ? `${p.firstStrike ? `${defendingView ? '我方' : '对方'}先攻` : `${defendingView ? '我方' : ''}存活后反击`}：伤害 ${p.counter} · 命中率 ${p.counterHit}% · 期望 ≈${approx(p.expectedCounter)}` : reaction === 'defend' ? `${defendingView ? '我方' : '对方'}防御：伤害已计入减伤，不反击` : '没有反击'),
+        h('div.tsrpg-muted', p.responds ? `${p.firstStrike ? `${defendingView ? '我方' : '对方'}先攻` : `${defendingView ? '我方' : ''}存活后反击`}：伤害 ${p.counter} · 命中率 ${p.counterHit}% · 期望 ≈${approx(p.expectedCounter)}` : reaction === 'defend' ? `${defendingView ? '我方' : '对方'}防御：伤害已计入减伤，不反击` : !target.object && E.isFoe(actor, target) && !E.canBrace(target) ? `${defendingView ? '我方' : '对方'}韧性耗尽：无法防御或反击，承受全额伤害` : '没有反击'),
         p.firstStrike && p.counter >= actor.hp ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
 }
 
@@ -587,7 +591,7 @@ function engagementPanel(app, b) {
         skill ? h('small.tsrpg-muted', skillSummary(skill)) : null,
         targets.map(t => previewCard(b, actor, t, app.data.rules, skill, E.defaultReaction(b, actor, t, app.data.rules, skill))),
         !targets.length ? h('div.tsrpg-warn', '范围内没有目标；执行仍会消耗技能。') : null,
-        h('small.tsrpg-muted', '期望伤害＝命中时伤害×命中率，未计随机浮动；反击 / 先攻以能出手为前提。敌方默认选择可用的反击，否则防御。'),
+        h('small.tsrpg-muted', '期望伤害＝命中时伤害×命中率，未计随机浮动；反击 / 先攻以能出手为前提。敌方默认选择可用的反击，否则防御；每次防御或反击消耗1点韧性，耗尽后只能承受。'),
         h('div.tsrpg-row',
             button('战斗', () => performEngagement(app, b, false), { icon: 'fa-khanda', cls: 'primary' }),
             button('战斗并生成描写', () => performEngagement(app, b, true), { icon: 'fa-comment' }),
@@ -645,18 +649,21 @@ function askReaction(app, b, request) {
             ui.busy = '回合结算中……';
             resolve(value);
         };
-        const defend = button('防御', () => settle('defend'), { icon: 'fa-shield', cls: 'primary' });
+        // 韧性耗尽时只能承受，仍可选择生成描写
+        const braced = E.canBrace(target);
+        const main = braced ? 'defend' : 'none';
+        const defend = button(braced ? '防御' : '承受', () => settle(main), { icon: braced ? 'fa-shield' : 'fa-heart-crack', cls: 'primary' });
         const responds = E.canRespond(b, attacker, target, app.data.rules, skill);
         const counter = responds ? button('反击', () => settle('counter'), { icon: 'fa-khanda' }) : null;
         const generate = reaction => {
             if (ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
             settle({ reaction, narrate: true });
         };
-        const defendNarrate = button('防御并生成描写', () => generate('defend'), { icon: 'fa-comment' });
+        const defendNarrate = button(braced ? '防御并生成描写' : '承受并生成描写', () => generate(main), { icon: 'fa-comment' });
         const counterNarrate = responds ? button('反击并生成描写', () => generate('counter'), { icon: 'fa-comment' }) : null;
         const cancel = button('取消本次回合', () => settle(null));
         const choices = [defend, counter, defendNarrate, counterNarrate, cancel].filter(Boolean);
-        ui.busy = `等待${target.name}选择${responds ? '反击或防御' : '防御'}`;
+        ui.busy = `等待${target.name}选择${!braced ? '承受' : responds ? '反击或防御' : '防御'}`;
         const overlay = h('div.tsrpg-overlay', { onkeydown: e => {
             if (e.key === 'Escape') { e.preventDefault(); settle(null); }
             if (e.key === 'Tab') {
@@ -664,11 +671,16 @@ function askReaction(app, b, request) {
                 const index = choices.indexOf(document.activeElement);
                 choices[(index + (e.shiftKey ? -1 : 1) + choices.length) % choices.length].focus();
             }
-        } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '选择反击或防御' },
+        } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': braced ? '选择反击或防御' : '承受攻击' },
             h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${target.name}`),
-            responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制），只能防御。'),
-            h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
-            h('small.tsrpg-muted', '防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。'),
+            !braced ? [
+                h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`),
+                previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
+            ] : [
+                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制），只能防御。'),
+                h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
+                h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）。`),
+            ],
             h('small.tsrpg-muted', '生成描写：本回合结算完成后，仅发送选择生成的交战；其他行动保留在待发送列表。'),
             h('div.tsrpg-row', defend, counter, defendNarrate, counterNarrate, cancel),
         ));
@@ -726,7 +738,7 @@ function manualPanel(app, b) {
         field('所选单位', select([['', '— 选择单位 —'], ...b.units.map(unit => [unit.uid, `${unit.name} · ${E.SIDE_NAMES[unit.side]}${unit.retreated ? '（已撤除）' : unit.hp <= 0 ? '（倒下）' : ''}`])], ui.sel || '', v => { ui.sel = v || null; app.render(); })),
         u ? [
             h('div.tsrpg-grid3',
-                [['hp', '当前HP'], ['maxHp', '最大HP'], ['atk', 'ATK'], ['matk', 'MATK'], ['def', 'DEF'], ['mdef', 'MDEF'], ['agi', 'AGI'], ['mov', 'MOV'], ['rangeMin', '最小射程'], ['rangeMax', '最大射程']].map(([key, label]) => field(label, numInput(u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value }), { min: key === 'maxHp' ? 1 : 0 })))),
+                [['hp', '当前HP'], ['maxHp', '最大HP'], ['atk', 'ATK'], ['matk', 'MATK'], ['def', 'DEF'], ['mdef', 'MDEF'], ['agi', 'AGI'], ['mov', 'MOV'], ['rangeMin', '最小射程'], ['rangeMax', '最大射程'], ['tough', '当前韧性'], ['toughMax', '韧性上限']].map(([key, label]) => field(label, numInput(key === 'tough' ? E.toughLeft(u) : key === 'toughMax' ? E.toughMax(u) : u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value }), { min: key === 'maxHp' ? 1 : 0 })))),
             field('阵营', select(Object.entries(E.SIDE_NAMES), u.side, value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'side', value }))),
             field('普通攻击顺序', select([['normal', '普通'], ['last', '后手 / 大剑']], u.attackOrder || 'normal', value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'attackOrder', value }))),
             h('div.tsrpg-row', ['flying', 'acted', 'keyTarget'].map((key, i) => checkbox(['飞行', '已行动', '关键目标'][i], u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value })))),

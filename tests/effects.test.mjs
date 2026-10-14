@@ -96,7 +96,7 @@ test('立即恢复、驱散、中毒不会致死、眩晕跳过行动', () => {
     const tick = ev2.find(e => e.type === 'dot');
     assert.ok(ev2.indexOf(tick) > ev2.findIndex(e => e.type === 'phase' && e.phase === 'player'), '中毒在受害者自己的阶段开始时结算');
     assert.equal(a.hp, 1, '中毒不会致死');
-    assert.match(buildBattleContext(b), /\[P2\] 战士｜我方｜位于 \(2,1\) 平原｜HP 1\/40\n.*\n  状态：攻击力上升10%（增益，剩 \d 回合）、中毒50%（减益，剩 \d 回合）/);
+    assert.match(buildBattleContext(b), /\[P2\] 战士｜我方｜位于 \(2,1\) 平原｜HP 1\/40｜韧性 2\/2\n.*\n  状态：攻击力上升10%（增益，剩 \d 回合）、中毒50%（减益，剩 \d 回合）/);
 });
 
 test('AI 会使用治疗和增益技能；伤害技能可附带减益', () => {

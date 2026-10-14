@@ -75,6 +75,7 @@ export function normalizeProfile(p) {
         }
         (u.skills || []).forEach(normalizeSkill); // 旧版技能（kind: 'heal'、无冷却 / 效果字段）
         if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
+        if (u.tough == null) u.tough = 2; // v0.17 新增韧性
     }
     for (const t of p.terrains) if (t.avoid == null) t.avoid = 0;
     return p;

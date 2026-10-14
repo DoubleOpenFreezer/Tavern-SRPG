@@ -5,7 +5,8 @@ import { MISSION_NAMES, EFFECTS, TRAIT_EFFECTS, traitSummary, normalizeSkill } f
 import * as ST from '../st.js';
 
 const SIDES = [['player', '我方'], ['ally', '友军'], ['enemy', '敌方']];
-const AIS = [['aggressive', '主动出击（会接近目标）'], ['defensive', '原地迎击（只攻击可触及的目标）'], ['stationary', '固守不动（不移动）']];
+const AIS = [['aggressive', '主动出击（会接近目标）'], ['defensive', '原地迎击（只攻击可触及的目标）'], ['stationary', '固守不动（不移动）'],
+    ['ranged', '远程游击（从安全位置攻击，不踏入敌人射程）'], ['flee', '逃跑（敌人接近时逃开，不攻击）']];
 const KINDS = [['physical', '物理伤害（ATK vs DEF）'], ['magical', '魔法伤害（MATK vs MDEF）'], ['support', '辅助（治疗 / 增益 / 减益）']];
 const TARGETS = [['ally', '友方（含自己）'], ['enemy', '敌方'], ['self', '仅自己']];
 
@@ -98,6 +99,8 @@ function unitForm(app, u) {
                 stat('def', 'DEF'), stat('mdef', 'MDEF'), stat('agi', 'AGI'), stat('mov', 'MOV'),
             ),
             h('small.tsrpg-muted', 'AGI（敏捷）影响命中与闪避：命中率＝基础命中 ＋（攻方AGI − 守方AGI）× 系数 − 地形闪避。'),
+            h('div.tsrpg-grid3', stat('tough', '韧性', { min: 0 })),
+            h('small.tsrpg-muted', '韧性：受到攻击时每次防御或反击消耗 1 点，耗尽后只能承受全额伤害；己方阶段开始时回满。集中攻击同一目标可以打穿它的韧性。'),
             h('div.tsrpg-grid3',
                 field('普通攻击类型', select(KINDS.slice(0, 2), u.atkType, set('atkType'))),
                 field('攻击射程（最小）', numInput(u.rangeMin, set('rangeMin'), { min: 1 })),
@@ -429,9 +432,14 @@ const TURNS_LABEL = {
 };
 const MISSION_HELP = {
     annihilate: '击败所有敌人（包括后续增援）。敌人会寻找最近的角色攻击。',
-    defend: '放置一个我方/友军的「★ 关键目标」（如城门）。敌人会朝它前进并攻击，只在被挡住时攻击挡路的角色。目标被摧毁即失败。',
+    defend: '放置我方/友军的「★ 关键目标」（如城门、平民）。敌人会朝它们前进并攻击，只在被挡住时攻击挡路的角色。被摧毁的数量达到下方设置即失败。',
     assault: '放置至少一个敌方「★ 关键目标」（如水晶、旗帜），全部摧毁即胜利。可配合增援让敌人源源不断。',
 };
+
+function guardCount(app, m) {
+    const defs = new Map(app.data.units.map(u => [u.id, u]));
+    return (m.placements || []).filter(p => { const d = defs.get(p.unitId); return d && d.side !== 'enemy' && d.keyTarget; }).length;
+}
 
 function missionEditor(app, m) {
     const s = app.settings;
@@ -444,6 +452,8 @@ function missionEditor(app, m) {
         h('div.tsrpg-grid3',
             field('任务类型', select(Object.entries(MISSION_NAMES), ms.type, v => { ms.type = v; app.save(); app.render(); })),
             field(label, numInput(ms.turns, v => { ms.turns = Math.max(0, v); app.save(); }, { min: 0 }), hint),
+            ms.type === 'defend' ? field('被摧毁几个算失败', numInput(Math.max(1, Number(ms.lossLimit) || 1), v => { ms.lossLimit = Math.max(1, Math.floor(v) || 1); app.save(); }, { min: 1 }),
+                `1＝任意一个被摧毁即失败；大于等于关键目标数量时，全部被摧毁才失败。当前地图有 ${guardCount(app, m)} 个我方/友军关键目标`) : null,
         ),
         h('div.tsrpg-muted', MISSION_HELP[ms.type]),
         h('div.tsrpg-section-title', '增援', h('div.tsrpg-spacer'),

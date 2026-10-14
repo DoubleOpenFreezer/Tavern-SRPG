@@ -29,6 +29,7 @@ export function makeUnit(over = {}) {
         icon: '',
         color: '',
         hp: 20, atk: 8, matk: 4, def: 4, mdef: 3, agi: 5, mov: 5,
+        tough: 2, // 韧性：每次防御或反击消耗 1 点，耗尽后只能承受伤害；己方阶段开始时回满
         rangeMin: 1, rangeMax: 1,
         atkType: 'physical',
         weaponName: '',

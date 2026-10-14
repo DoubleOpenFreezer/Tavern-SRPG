@@ -1,5 +1,5 @@
 // 把战斗事件 / 战场状态翻译成给 LLM 的文本
-import { SIDE_NAMES, MISSION_NAMES, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel } from './engine.js';
+import { SIDE_NAMES, MISSION_NAMES, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel, defendLossLimit } from './engine.js';
 
 const pos = p => `(${p.x + 1},${p.y + 1})`;
 const KIND = { physical: '物理', magical: '魔法', support: '辅助', heal: '治疗' };
@@ -85,6 +85,7 @@ function formatEventBody(e) {
         case 'attack': {
             let lead = '';
             if (e.reaction === 'defend') lead = `${who(e.target)}选择防御，放弃反击并减轻伤害。`;
+            if (e.exhausted) lead = `${who(e.target)}韧性耗尽，无法防御或反击，只能硬接这一击。`;
             if (e.firstStrike) {
                 const f = e.firstStrike;
                 lead = `${who(e.actor)} 使用后手武器，${who(e.target)}先攻${f.hit === false ? '但未命中' : `造成 ${f.damage} 点伤害（${e.actor.name} ${hpChange(f)}）`}。`;
@@ -108,6 +109,7 @@ function formatEventBody(e) {
                 const counter = r.counter ? r.counter.hit === false ? '；反击未命中' : `；反击造成 ${r.counter.damage} 点伤害（${e.actor.name} ${hpChange(r.counter)}）${r.counter.killed ? '，施法者被击败' : ''}` : '';
                 if (r.missed) return `${who(r.target)} 闪避了（未命中）${counter}`;
                 const bits = [];
+                if (r.exhausted) bits.push('韧性耗尽，无法防御');
                 if (r.reaction === 'defend') bits.push('选择防御');
                 if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
@@ -203,8 +205,15 @@ export function missionText(battle) {
     const names = list => list.map(u => `「${u.name}」${u.hp > 0 ? '' : '（已摧毁）'}`).join('');
     const left = n ? `（还剩 ${Math.max(0, n - battle.turn + 1)} 回合）` : '';
     switch (m.type) {
-        case 'defend':
-            return `${MISSION_NAMES.defend}：敌人会直奔${names(guardTargets(battle)) || '守卫目标'}，保护它不被摧毁${n ? `，坚守到第 ${n} 回合结束${left}` : '，并击退所有敌人'}。`;
+        case 'defend': {
+            const guards = guardTargets(battle);
+            const limit = defendLossLimit(battle);
+            const lost = guards.filter(u => u.hp <= 0).length;
+            const rule = guards.length <= 1 ? '，保护它不被摧毁'
+                : limit === 1 ? '，任意一个被摧毁即失败'
+                : `，${limit >= guards.length ? '全部' : ` ${limit} 个`}被摧毁才算失败（已摧毁 ${lost}/${guards.length}）`;
+            return `${MISSION_NAMES.defend}：敌人会直奔${names(guards) || '守卫目标'}${rule}${n ? `，坚守到第 ${n} 回合结束${left}` : '，并击退所有敌人'}。`;
+        }
         case 'assault':
             return `${MISSION_NAMES.assault}：破坏敌方关键目标${names(enemyKeyTargets(battle))}${n ? `，需在第 ${n} 回合结束前完成${left}` : ''}。`;
         default:

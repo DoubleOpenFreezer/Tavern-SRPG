@@ -1,6 +1,6 @@
 // 给 LLM 读取的战场信息：地图网格、单位详情、地形图例、任务、最近战况
 import {
-    SIDE_NAMES, EFFECTS, traitSummary, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist,
+    SIDE_NAMES, EFFECTS, traitSummary, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist, toughLeft, toughMax,
 } from './engine.js';
 import { missionText, upcomingWaves, skillSummary } from './narrator.js';
 
@@ -110,7 +110,8 @@ function unitBlock(b, u, labels, opts) {
     if (u.keyTarget) tags.push(u.side === 'enemy' ? '★关键目标（摧毁它）' : '★关键目标（保护它）');
     if (u.flying) tags.push('飞行');
     if (u.attackOrder === 'last') tags.push(`${u.weaponName || '重武器'}：普通攻击后手`);
-    const lines = [`[${labels[u.uid]}] ${u.name}${aliases.length ? `（又名：${aliases.join('、')}）` : ''}｜${tags.join('｜')}｜位于 ${pos(u)} ${t.name}｜HP ${u.hp}/${u.maxHp}`];
+    const tough = u.object ? '' : `｜韧性 ${toughLeft(u)}/${toughMax(u)}${toughLeft(u) ? '' : '（耗尽，无法防御或反击）'}`;
+    const lines = [`[${labels[u.uid]}] ${u.name}${aliases.length ? `（又名：${aliases.join('、')}）` : ''}｜${tags.join('｜')}｜位于 ${pos(u)} ${t.name}｜HP ${u.hp}/${u.maxHp}${tough}`];
 
     if (opts.stats) {
         const keys = u.object ? ['def', 'mdef'] : ['atk', 'matk', 'def', 'mdef', 'agi', 'mov'];

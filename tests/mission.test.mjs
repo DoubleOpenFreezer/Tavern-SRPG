@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { flatDefaults as defaultSettings, makeMap, makeUnit, makeWave } from '../src/defaults.js';
 import * as E from '../src/engine.js';
-import { composeMessage } from '../src/narrator.js';
+import { composeMessage, missionText } from '../src/narrator.js';
 
 const S = defaultSettings();
 const rules = { ...S.rules, variance: 0 };
@@ -65,6 +65,38 @@ test('守城战：城门被摧毁即失败；坚守到回合数即胜利', () =>
     const ev = E.endPlayerPhase(b2, rules, fixed);
     assert.equal(b2.result, 'victory');
     assert.match(ev.at(-1).reason, /坚守了 2 回合/);
+});
+
+test('守城战多个关键目标：被摧毁数量达到设定才失败，超过数量按全部计，默认任意一个即失败', () => {
+    const civ = makeUnit({ id: 'civ', name: '平民', side: 'ally', keyTarget: true, hp: 10 });
+    const all = [...defs, civ];
+    const place = [{ unitId: 'gate', x: 0, y: 2 }, { unitId: 'civ', x: 0, y: 4 }, { unitId: 'civ', x: 1, y: 4 }, { unitId: 'hero', x: 0, y: 0 }, { unitId: 'orc', x: 9, y: 4 }];
+    const make = mission => E.createBattle(arena(place, { mission: { type: 'defend', turns: 3, ...mission } }), all, S.terrains);
+
+    const strict = make({});
+    assert.equal(E.defendLossLimit(strict), 1);
+    assert.match(composeMessage(strict, [{ type: 'mission', turn: 1, text: missionText(strict) }], S), /任意一个被摧毁即失败/);
+    strict.units[1].hp = 0;
+    assert.equal(E.checkResult(strict).result, 'defeat');
+
+    const b = make({ lossLimit: 2 });
+    const [gateU, civ1, civ2] = b.units;
+    civ1.hp = 0;
+    assert.equal(E.checkResult(b), null, '损失1个仍可继续');
+    assert.match(missionText(b), /2 个被摧毁才算失败（已摧毁 1\/3）/);
+    gateU.hp = 0;
+    const r = E.checkResult(b);
+    assert.equal(r.result, 'defeat');
+    assert.match(r.reason, /守卫目标「城门」「平民A」被摧毁/);
+    assert.match(r.reason, /2\/3，达到失败条件/);
+
+    const allLost = make({ lossLimit: 99 });
+    assert.equal(E.defendLossLimit(allLost), 3);
+    assert.match(missionText(allLost), /全部被摧毁才算失败/);
+    allLost.units.slice(0, 2).forEach(u => { u.hp = 0; });
+    assert.equal(E.checkResult(allLost), null);
+    allLost.units[2].hp = 0;
+    assert.equal(E.checkResult(allLost).result, 'defeat');
 });
 
 test('进攻战：摧毁全部敌方关键目标即胜利，即使敌人还活着', () => {

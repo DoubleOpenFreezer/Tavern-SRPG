@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defaultSettings, META_KEY, makeUnit, makeMap } from '../src/defaults.js';
 import { newBattleUi, renderBattleTab } from '../src/ui/battle.js';
+import * as E from '../src/engine.js';
 import { renderProfilesTab } from '../src/ui/profiles-tab.js';
 
 // Minimal DOM for exercising the real battle renderer and its event handlers.
@@ -536,6 +537,25 @@ for (const reaction of ['反击', '防御']) {
         assert.equal(app.bs.busy, null);
     });
 }
+
+test('韧性耗尽时受击只能承受，仍可生成描写；承受不减伤也不反击', async t => {
+    const { app, context, click } = setupExchange(t);
+    app.settings.ui.confirmDefense = true;
+    const b = context.chatMetadata[META_KEY], [hero, foe] = b.units;
+    hero.acted = true; hero.tough = 0;
+    const run = click('仅结算回合');
+    await waitForReaction(app);
+    const dialogButton = label => find(app.panel, n => n.tag === 'button' && n.textContent === label);
+    assert.ok(app.panel.textContent.includes('韧性耗尽'));
+    assert.ok(dialogButton('承受并生成描写'));
+    assert.ok(!dialogButton('防御') && !dialogButton('反击') && !dialogButton('反击并生成描写'));
+    dialogButton('承受').listeners.click();
+    await run;
+    assert.equal(hero.hp, 80, '全额伤害');
+    assert.equal(foe.hp, 100, '没有反击');
+    assert.equal(E.toughLeft(hero), 2, '我方阶段开始时回满');
+    assert.ok(b.pending.some(e => e.type === 'attack' && e.exhausted));
+});
 
 test('无法反击时仍可防御并生成描写，取消不发送', async t => {
     const { app, context, click } = setupExchange(t, 2);

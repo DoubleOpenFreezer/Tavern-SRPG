@@ -1,5 +1,5 @@
 // LLM 指挥官：把 AI 单位的可选行动列给 LLM，由 LLM 选择。纯逻辑部分（描述、提示词、解析回复）。
-import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit, attractionTargets, isFoe } from './engine.js';
+import { SIDE_NAMES, aiOptions, hitChance, skillHitChance, skillAffected, terrainAt, getUnit, attractionTargets, isFoe, canBrace } from './engine.js';
 import { unitLabels } from './context.js';
 import { exchangePreview } from './exchange.js';
 
@@ -18,7 +18,7 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
                 const t = getUnit(b, plan.target.uid);
                 const preview = exchangePreview(b, unit, t, rules);
                 const dmg = preview.damage;
-                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}${preview.firstStrike ? `；目标先攻，若受到约${preview.counter}点伤害后存活才出手` : ''}）`;
+                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}${canBrace(t) ? '' : '，目标韧性耗尽无法招架'}${preview.firstStrike ? `；目标先攻，若受到约${preview.counter}点伤害后存活才出手` : ''}）`;
             }
             case 'skill': {
                 const sk = plan.skill;
@@ -34,6 +34,8 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
                 return `${go}使用【${sk.name}】${sk.attackMode === 'mapLine' ? 'MAP直线，不反击；' : sk.attackMode === 'mapArea' ? 'MAP范围，不反击；' : ''}作用于 ${who.join('、')}`;
             }
             case 'move':
+                if (plan.flee) return `逃离敌人，移动到 ${pos(plan.x, plan.y)}${terrainAt(b, plan.x, plan.y).name}`;
+                if (plan.cautious) return `保持距离前进，移动到 ${pos(plan.x, plan.y)}${terrainAt(b, plan.x, plan.y).name}（尽量停在敌人攻击范围外）`;
                 return `向 ${name(plan.toward)} 前进，移动到 ${pos(plan.x, plan.y)}${terrainAt(b, plan.x, plan.y).name}`;
             default:
                 return '原地待命，不行动';

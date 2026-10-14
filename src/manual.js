@@ -1,7 +1,7 @@
 // 用户手动调整战场：只改当前战斗，不改资料卡；所有参数先校验再写入。
-import { getUnit, unitAt, inBounds, enterCost, makeBattleUnit, commit, SIDE_NAMES } from './engine.js';
+import { getUnit, unitAt, inBounds, enterCost, makeBattleUnit, commit, SIDE_NAMES, toughMax, toughLeft } from './engine.js';
 
-const NUMERIC = new Set(['hp', 'maxHp', 'atk', 'matk', 'def', 'mdef', 'agi', 'mov', 'rangeMin', 'rangeMax']);
+const NUMERIC = new Set(['hp', 'maxHp', 'atk', 'matk', 'def', 'mdef', 'agi', 'mov', 'rangeMin', 'rangeMax', 'tough', 'toughMax']);
 function position(b, x, y, unit) {
     if (!Number.isInteger(x) || !Number.isInteger(y) || !inBounds(b, x, y)) throw new Error('坐标超出地图范围');
     const occupant = unitAt(b, x, y);
@@ -41,6 +41,7 @@ export function applyManualChange(b, change, data) {
             if (NUMERIC.has(key)) {
                 if (!Number.isFinite(value) || value < 0 || (key === 'maxHp' && value < 1)) throw new Error('数值必须为非负数，最大HP至少为1');
                 value = Math.floor(value);
+                if (key === 'tough' && value > toughMax(u)) throw new Error('韧性不能超过韧性上限');
                 if (key === 'hp') {
                     if (value > u.maxHp) throw new Error('HP不能超过最大HP');
                     if (value > 0) position(b, u.x, u.y, u);
@@ -52,7 +53,8 @@ export function applyManualChange(b, change, data) {
             } else if (['flying', 'acted', 'keyTarget'].includes(key)) {
                 if (typeof value !== 'boolean') throw new Error('无效开关值');
             } else throw new Error('不支持修改此属性');
-            const before = u[key];
+            const before = key === 'tough' ? toughLeft(u) : key === 'toughMax' ? toughMax(u) : u[key];
+            if (key === 'toughMax') u.tough = Math.min(toughLeft(u), value);
             u[key] = value;
             if (key === 'maxHp') u.hp = Math.min(u.hp, value);
             if (key === 'hp' && value > 0) u.retreated = false;
@@ -63,9 +65,9 @@ export function applyManualChange(b, change, data) {
         }
         case 'restore':
             position(b, u.x, u.y, u);
-            u.hp = u.maxHp; u.retreated = false; u.acted = false; u.moved = false; u.statuses = [];
+            u.hp = u.maxHp; u.retreated = false; u.acted = false; u.moved = false; u.statuses = []; u.tough = toughMax(u);
             for (const sk of u.skills) { sk.cdLeft = 0; sk.usesLeft = Number(sk.uses) || 0; }
-            text = `${u.name}已满血恢复、解除状态、重置行动和技能。`;
+            text = `${u.name}已满血恢复、回满韧性、解除状态、重置行动和技能。`;
             break;
         case 'terrain': {
             if (!inBounds(b, change.x, change.y) || !Number.isInteger(change.x) || !Number.isInteger(change.y)) throw new Error('坐标超出地图范围');

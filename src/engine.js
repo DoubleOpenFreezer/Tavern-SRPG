@@ -369,6 +369,27 @@ export function canCounter(b, defender, attacker) {
     return d >= defender.rangeMin && d <= defender.rangeMax;
 }
 
+// ---------------------------------------------------------------- 韧性
+// 防御或反击各消耗 1 点；耗尽后只能承受伤害。在己方阶段开始时回满。
+
+export const DEFAULT_TOUGH = 2;
+
+export function toughMax(u) {
+    if (u.object) return 0;
+    const n = Number(u.toughMax);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : DEFAULT_TOUGH; // 旧战斗中的单位没有韧性字段
+}
+
+export function toughLeft(u) {
+    const n = Number(u.tough);
+    return Math.min(toughMax(u), Number.isFinite(n) ? Math.max(0, Math.floor(n)) : toughMax(u));
+}
+
+/** 是否还能防御或反击 */
+export function canBrace(u) {
+    return !u.object && toughLeft(u) > 0;
+}
+
 // ---------------------------------------------------------------- 行动
 
 /** 地形伤害不受防御减免，可致死；飞行单位默认免疫。 */
@@ -419,14 +440,28 @@ export function defenseDamage(damage, rules) {
 }
 
 export function canRespond(b, attacker, defender, rules, skill = null) {
-    if (!isFoe(attacker, defender) || !canCounter(b, defender, attacker)) return false;
+    if (!isFoe(attacker, defender) || !canBrace(defender) || !canCounter(b, defender, attacker)) return false;
     if (skill && (skill.kind === 'support' || ['mapLine', 'mapArea'].includes(skill.attackMode))) return false;
     return !!rules.counter || (!skill && attacker.attackOrder === 'last' && defender.attackOrder !== 'last');
 }
 
 export function defaultReaction(b, attacker, defender, rules, skill = null) {
-    if (defender.object) return 'none';
-    return isFoe(attacker, defender) ? canRespond(b, attacker, defender, rules, skill) ? 'counter' : 'defend' : 'none';
+    if (defender.object || !isFoe(attacker, defender) || !canBrace(defender)) return 'none';
+    return canRespond(b, attacker, defender, rules, skill) ? 'counter' : 'defend';
+}
+
+/**
+ * 结算前校正受击反应并扣除韧性：没有韧性只能承受（exhausted）；无法反击时的「反击」视为承受。
+ * 必须在扣血前调用，返回 { reaction, exhausted?, tough? }。
+ */
+function useReaction(b, attacker, defender, rules, reaction, skill = null) {
+    if (defender.object || !isFoe(attacker, defender)) return { reaction: 'none' };
+    if (!canBrace(defender)) return { reaction: 'none', exhausted: true };
+    if (!['counter', 'defend'].includes(reaction)) return { reaction: 'none' };
+    if (reaction === 'counter' && !canRespond(b, attacker, defender, rules, skill)) return { reaction: 'none' };
+    const before = toughLeft(defender);
+    defender.tough = before - 1;
+    return { reaction, tough: [before, defender.tough] };
 }
 
 export function previewAttack(b, unit, target, rules, reaction = 'counter') {
@@ -460,6 +495,8 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
     }
     const forced = taunters(b, unit);
     if (forced.length && !forced.includes(target)) throw new Error(`被嘲讽，只能攻击${forced.map(t => t.name).join('、')}`);
+    const used = useReaction(b, unit, target, rules, reaction);
+    reaction = used.reaction;
     const first = reaction === 'counter' && unit.attackOrder === 'last' && target.attackOrder !== 'last' && canCounter(b, target, unit)
         ? { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) } : null;
     const ev = {
@@ -471,6 +508,8 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
         firstStrike: first,
         cancelled: !!first && unit.hp <= 0,
         reaction,
+        ...(used.exhausted ? { exhausted: true } : {}),
+        ...(used.tough ? { tough: used.tough } : {}),
     };
     if (reaction === 'counter' && !first && rules.counter && canCounter(b, target, unit)) {
         ev.counter = { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) };
@@ -565,8 +604,12 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     }
     const affected = skillAffected(b, unit, skill, tx, ty);
     if (!affected.length && !['mapLine', 'mapArea'].includes(skill.attackMode)) throw new Error('该位置没有可作用的目标');
+    // 受击反应先于命中判定确定，未命中也已消耗韧性
+    const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'none', skill)]));
     const results = affected.map(t => {
         const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
+        if (used[t.uid].exhausted) r.exhausted = true;
+        if (used[t.uid].tough) r.tough = used[t.uid].tough;
         const chance = skillHitChance(b, unit, skill, t, rules);
         if (!rollHit(chance, rng)) {
             Object.assign(r, { missed: true, hitRate: chance, hpAfter: t.hp });
@@ -574,7 +617,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         }
         if (skill.kind !== 'support') {
             r.damage = calcDamage(b, unit, t, skill.kind, skill.power, rules, rng);
-            r.reaction = responses[t.uid] || 'none';
+            r.reaction = used[t.uid].reaction;
             if (r.reaction === 'defend' && !t.object) r.damage = defenseDamage(r.damage, rules);
             r.killed = applyDamage(t, r.damage).killed;
         }
@@ -588,7 +631,8 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     });
     for (let i = 0; i < affected.length && unit.hp > 0; i++) {
         const target = affected[i];
-        if (responses[target.uid] === 'counter' && canRespond(b, unit, target, rules, skill)) {
+        // 反击已在 useReaction 中确认并扣除韧性，这里只检查目标是否还能出手
+        if (used[target.uid].reaction === 'counter' && canCounter(b, target, unit)) {
             results[i].counter = { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) };
         }
     }
@@ -621,6 +665,13 @@ export function guardTargets(b) {
     return b.units.filter(u => u.keyTarget && team(u) === 'P');
 }
 
+/** 守城战中被摧毁几个守卫目标即失败（默认 1；超过目标数量时按全部被摧毁计） */
+export function defendLossLimit(b) {
+    const total = guardTargets(b).length;
+    const n = Math.max(1, Math.floor(Number(missionOf(b).lossLimit) || 1));
+    return total ? Math.min(n, total) : n;
+}
+
 /** 进攻战中需要破坏的目标：敌方的关键目标 */
 export function enemyKeyTargets(b) {
     return b.units.filter(u => u.keyTarget && u.side === 'enemy');
@@ -647,8 +698,13 @@ export function checkResult(b) {
     const units = alive(b);
     if (!units.some(u => u.side === 'player' && !u.object)) return { result: 'defeat', reason: '我方全军覆没' };
     if (m.type === 'defend') {
-        const lost = guardTargets(b).find(u => u.hp <= 0);
-        if (lost) return { result: 'defeat', reason: `守卫目标「${lost.name}」被摧毁` };
+        const guards = guardTargets(b);
+        const lost = guards.filter(u => u.hp <= 0);
+        const limit = defendLossLimit(b);
+        if (lost.length && lost.length >= limit) {
+            const names = lost.map(u => `「${u.name}」`).join('');
+            return { result: 'defeat', reason: guards.length > 1 ? `守卫目标${names}被摧毁（${lost.length}/${guards.length}，达到失败条件）` : `守卫目标${names}被摧毁` };
+        }
     }
     if (m.type === 'assault') {
         const keys = enemyKeyTargets(b);
@@ -781,12 +837,13 @@ function bestActionAt(b, unit, x, y, rules, filter, mode) {
     return best;
 }
 
-function bestAction(b, unit, nodes, rules, filter, mode = 'attack') {
+function bestAction(b, unit, nodes, rules, filter, mode = 'attack', penalty = null) {
     let best = null;
     for (const node of nodes) {
         const cand = bestActionAt(b, unit, node.x, node.y, rules, filter, mode);
         if (!cand) continue;
         cand.score -= node.cost * 0.01; // 同分时少走路
+        if (penalty) cand.score -= penalty(node);
         if (!best || cand.score > best.score) best = cand;
     }
     return best;
@@ -848,12 +905,97 @@ function better(a, c) {
     return c.score > a.score ? c : a;
 }
 
+// ---------------------------------------------------------------- 危险评估（逃跑 / 远程游击）
+
+/** 站在 (x,y) 时地形造成的伤害（落脚 + 回合开始），不修改单位 */
+function tileHazard(b, unit, x, y) {
+    const t = terrainAt(b, x, y);
+    if (unit.object || (unit.flying && !t.damageFlying)) return 0;
+    let total = 0;
+    for (const timing of ['enter', 'turn']) {
+        const fixed = Math.max(0, Number(t[`${timing}Damage`]) || 0);
+        const pct = Math.max(0, Number(t[`${timing}DamagePct`]) || 0);
+        total += Math.floor(fixed) + (pct > 0 ? Math.max(1, Math.round(unit.maxHp * pct / 100)) : 0);
+    }
+    return total;
+}
+
+/** 敌人从 (x,y) 出发、不移动时能用普通攻击或伤害技能打到的格子 */
+function strikeTiles(b, foe, x, y) {
+    const keys = new Set();
+    const put = ([tx, ty]) => keys.add(`${tx},${ty}`);
+    tilesInRange(b, x, y, foe.rangeMin, foe.rangeMax).forEach(put);
+    for (const sk of foe.skills || []) {
+        if (sk.kind === 'support' || !skillUsable(sk)) continue;
+        if (sk.attackMode === 'mapLine') {
+            const len = Math.max(1, Math.min(100, Math.floor(Number(sk.lineLength) || 3)));
+            for (const [dx, dy] of DIRS) for (let n = 1; n <= len && inBounds(b, x + dx * n, y + dy * n); n++) put([x + dx * n, y + dy * n]);
+        } else {
+            const radius = sk.attackMode === 'mapArea' ? Math.max(1, Number(sk.radius) || 1) : Math.max(0, Number(sk.radius) || 0);
+            tilesInRange(b, x, y, 0, (Number(sk.rangeMax) || 0) + radius).forEach(put);
+        }
+    }
+    return keys;
+}
+
+/**
+ * 下一个敌方阶段的威胁：格子 -> 可能受到的伤害估计（每个敌人取其最强一击，叠加）。
+ * 敌人的移动按当前站位估算，眩晕、建筑不计。
+ */
+export function threatMap(b, unit, rules) {
+    const map = new Map();
+    for (const f of alive(b)) {
+        if (!isFoe(f, unit) || f.object || isStunned(f)) continue;
+        let hit = calcDamage(b, f, unit, f.atkType, 100, rules, Math.random, true);
+        for (const sk of f.skills || []) {
+            if (sk.kind !== 'support' && skillUsable(sk)) hit = Math.max(hit, calcDamage(b, f, unit, sk.kind, sk.power, rules, Math.random, true));
+        }
+        const zone = new Set();
+        const from = f.ai === 'stationary' ? [{ x: f.x, y: f.y }] : reachable(b, f, stat(f, 'mov'), true).values();
+        for (const n of from) for (const k of strikeTiles(b, f, n.x, n.y)) zone.add(k);
+        for (const k of zone) map.set(k, (map.get(k) || 0) + hit);
+    }
+    return map;
+}
+
+function dangerOf(b, unit, threat, x, y) {
+    return (threat.get(`${x},${y}`) || 0) + tileHazard(b, unit, x, y) * 2;
+}
+
+/** 逃跑：当前位置安全就不动；否则去危险最小、离敌人最远的格子 */
+export function fleeDestination(b, unit, nodes, rules, threat = threatMap(b, unit, rules)) {
+    if (!(threat.get(`${unit.x},${unit.y}`) > 0)) return null;
+    const foes = alive(b).filter(f => isFoe(f, unit) && !f.object);
+    const far = (x, y) => foes.length ? Math.min(...foes.map(f => dist(x, y, f.x, f.y))) : 0;
+    let best = null;
+    for (const n of nodes) {
+        const c = { x: n.x, y: n.y, cost: n.cost, danger: dangerOf(b, unit, threat, n.x, n.y), far: far(n.x, n.y) };
+        if (!best || c.danger < best.danger || (c.danger === best.danger && (c.far > best.far || (c.far === best.far && c.cost < best.cost)))) best = c;
+    }
+    return best && (best.x !== unit.x || best.y !== unit.y) ? best : null;
+}
+
+/** 远程游击没有攻击目标时：朝目标前进，但尽量停在敌人的威胁范围之外 */
+function cautiousAdvance(b, unit, nodes, rules, threat) {
+    const goals = goalTargets(b, unit);
+    if (!goals.length) return null;
+    const field = distanceField(b, unit, goals.map(g => [g.x, g.y]));
+    let best = null;
+    for (const n of nodes) {
+        const c = { x: n.x, y: n.y, cost: n.cost, danger: dangerOf(b, unit, threat, n.x, n.y), v: field[n.y * b.w + n.x] };
+        if (!best || c.danger < best.danger || (c.danger === best.danger && (c.v < best.v || (c.v === best.v && c.cost < best.cost)))) best = c;
+    }
+    return best && (best.x !== unit.x || best.y !== unit.y) ? best : null;
+}
+
 /**
  * 让单个 AI 单位行动，返回事件列表
  * - 主动出击：按距离从近到远，攻击最近的能打到的目标；都打不到就朝最近的目标前进，途中顺手攻击射程内的敌人
  *   （守城战中敌人的目标是守卫目标；被嘲讽时目标只能是嘲讽者）
  * - 原地迎击：只攻击移动后能打到的目标，不主动接近
  * - 固守不动：不移动，只攻击射程内的目标
+ * - 逃跑：不攻击；敌人下回合打不到就原地不动，否则逃到最安全的位置（仍可使用辅助技能）
+ * - 远程游击：从最安全的位置攻击；打不到目标时前进到敌人威胁范围边缘，不主动踏入
  * 辅助技能（治疗、增益、减益）与攻击比较估值，取较高者
  */
 function* aiActSteps(b, unit, rules, rng = Math.random) {
@@ -895,6 +1037,25 @@ function* aiActSteps(b, unit, rules, rng = Math.random) {
             }
             const here = [{ x: unit.x, y: unit.y, cost: 0 }];
             plan = better(bestAction(b, unit, here, rules, anyFoe), bestAction(b, unit, here, rules, anyFoe, 'support'));
+        }
+    } else if (unit.ai === 'flee') {
+        const dest = fleeDestination(b, unit, nodes, rules);
+        if (dest) {
+            const mv = doMove(b, unit, dest.x, dest.y);
+            if (mv) events.push(mv);
+        }
+        if (unit.hp > 0) plan = bestAction(b, unit, [{ x: unit.x, y: unit.y, cost: 0 }], rules, anyFoe, 'support');
+    } else if (unit.ai === 'ranged') {
+        const threat = threatMap(b, unit, rules);
+        // 攻击位置按承受的风险扣分（伤害约按一半计入），能打就打，只是挑更安全的格子
+        const risk = n => dangerOf(b, unit, threat, n.x, n.y) * 0.5;
+        plan = better(bestAction(b, unit, nodes, rules, anyFoe, 'attack', risk), bestAction(b, unit, nodes, rules, anyFoe, 'support', risk));
+        if (!plan) {
+            const dest = cautiousAdvance(b, unit, nodes, rules, threat);
+            if (dest) {
+                const mv = doMove(b, unit, dest.x, dest.y);
+                if (mv) events.push(mv);
+            }
         }
     } else {
         plan = better(bestAction(b, unit, nodes, rules, anyFoe), support);
@@ -941,6 +1102,7 @@ function startTurnEffects(b, side) {
     const events = [];
     for (const u of alive(b).filter(x => x.side === side)) {
         u.phaseX = u.x; u.phaseY = u.y;
+        u.tough = toughMax(u);
         const t = terrainAt(b, u.x, u.y);
         const damage = terrainDamage(b, u, 'turn');
         if (damage) events.push(damage);
@@ -1096,6 +1258,13 @@ export function aiOptions(b, unit, rules, limit = 6) {
         ? [{ x: unit.x, y: unit.y, cost: 0 }]
         : reachable(b, unit).values())];
     const anyFoe = t => isFoe(t, unit);
+    const wait = { kind: 'wait', x: unit.x, y: unit.y, score: 0 };
+    if (unit.ai === 'flee') {
+        // 逃跑的单位不攻击：逃离 / 原地使用辅助技能 / 待命
+        const dest = fleeDestination(b, unit, nodes, rules);
+        const support = candidatesAt(b, unit, unit.x, unit.y, rules, anyFoe, 'support').sort((a, c) => c.score - a.score).slice(0, Math.max(1, limit - 2));
+        return [...(dest ? [{ kind: 'move', x: dest.x, y: dest.y, flee: true, score: 0 }] : []), ...support, wait];
+    }
     const best = new Map();
     for (const n of nodes) {
         for (const mode of ['attack', 'support']) {
@@ -1109,6 +1278,10 @@ export function aiOptions(b, unit, rules, limit = 6) {
     const actions = [...best.values()].sort((a, c) => c.score - a.score).slice(0, Math.max(1, limit - 2));
 
     const moves = [];
+    if (unit.ai === 'ranged') {
+        const dest = cautiousAdvance(b, unit, nodes, rules, threatMap(b, unit, rules));
+        if (dest) moves.push({ kind: 'move', x: dest.x, y: dest.y, cautious: true, score: 0 });
+    }
     if (unit.ai !== 'stationary') {
         const fromMe = distanceField(b, unit, [[unit.x, unit.y]]);
         const goals = goalTargets(b, unit).map(g => [g, fieldDist(b, fromMe, g)]).sort((a, c) => a[1] - c[1]).slice(0, 2);
@@ -1124,7 +1297,7 @@ export function aiOptions(b, unit, rules, limit = 6) {
             }
         }
     }
-    return [...actions, ...moves, { kind: 'wait', x: unit.x, y: unit.y, score: 0 }];
+    return [...actions, ...moves, wait];
 }
 
 /** 当前局面下这个行动是否仍然可以执行（其他单位行动后，位置或目标可能已经变化） */
@@ -1180,6 +1353,12 @@ export function actWithPlanInteractive(b, unit, plan, rules, choose, rng = Math.
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+/** 资料卡单位的韧性上限 */
+export function unitTough(d) {
+    const n = Number(d.tough);
+    return d.kind === 'object' ? 0 : Number.isFinite(n) && d.tough !== '' && d.tough != null ? Math.max(0, Math.floor(n)) : DEFAULT_TOUGH;
+}
+
 export function makeBattleUnit(d, uidStr, name, x, y) {
     const hp = Math.max(1, Number(d.hp) || 1);
     const object = d.kind === 'object';
@@ -1205,6 +1384,8 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         flying: !object && !!d.flying,
         ai: object ? 'stationary' : d.ai || 'aggressive',
         mapReckless: d.mapReckless !== false,
+        toughMax: object ? 0 : unitTough(d),
+        tough: object ? 0 : unitTough(d),
         object,
         keyTarget: !!d.keyTarget,
         skills: object ? [] : (d.skills || []).map(s => ({ ...normalizeSkill(structuredClone(s)), usesLeft: Number(s.uses) || 0, cdLeft: 0 })),
