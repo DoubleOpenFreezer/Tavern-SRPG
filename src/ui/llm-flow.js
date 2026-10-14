@@ -209,7 +209,7 @@ export async function runAiPhases(app, b, { quiet = false, chooseReaction, proce
                     processBefore = structuredClone(b);
                 }
                 check();
-                const response = chooseReaction ? await chooseReaction(request) : E.defaultReaction(b, request.attacker, request.target, app.data.rules, request.skill);
+                const response = chooseReaction ? await chooseReaction(request) : E.defaultReaction(b, request.attacker, request.target, app.data.rules, request.skill, !!request.cover);
                 check();
                 if (!['counter', 'defend', 'none'].includes(response)) throw new Error('已取消本次回合结算。');
                 return response;

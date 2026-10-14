@@ -604,11 +604,17 @@ function engagementPanel(app, b) {
     const skill = plan.skillId && actor?.skills.find(sk => sk.id === plan.skillId);
     const target = plan.targetId && E.getUnit(b, plan.targetId);
     const targets = actor ? skill ? E.skillAffected(b, actor, skill, plan.x, plan.y) : target ? [target] : [] : [];
+    const covered = t => actor && E.coverFor(b, actor, t, skill);
     return h('div.tsrpg-engagement',
         h('div.tsrpg-section-title', '战斗确认'),
         h('b', `${actor?.name || '单位'} → ${skill ? skill.name : target?.name || '目标'}`),
         skill ? h('small.tsrpg-muted', skillSummary(skill)) : null,
-        targets.map(t => previewCard(b, actor, t, app.data.rules, skill, E.defaultReaction(b, actor, t, app.data.rules, skill))),
+        targets.map(t => {
+            const c = covered(t);
+            if (!c) return previewCard(b, actor, t, app.data.rules, skill, E.defaultReaction(b, actor, t, app.data.rules, skill));
+            return [h('div.tsrpg-warn', `【援护】${c.unit.name}将替${t.name}承受这次攻击（不反击）`),
+                previewCard(b, actor, c.unit, app.data.rules, skill, E.defaultReaction(b, actor, c.unit, app.data.rules, skill, true))];
+        }),
         !targets.length ? h('div.tsrpg-warn', '范围内没有目标；执行仍会消耗技能。') : null,
         h('small.tsrpg-muted', '期望伤害＝命中时伤害×命中率，未计随机浮动；反击 / 先攻以能出手为前提。敌方默认选择可用的反击，否则防御；每次防御或反击消耗1点韧性，耗尽后只能承受。'),
         h('div.tsrpg-row',
@@ -630,8 +636,14 @@ export async function performEngagement(app, b, narrate = false) {
     }
     app.bs.engagement = null;
     const events = await act(app, b, () => {
-        if (!skill) return E.doAttack(b, actor, target, app.data.rules, Math.random, E.defaultReaction(b, actor, target, app.data.rules));
-        const responses = Object.fromEntries(E.skillAffected(b, actor, skill, plan.x, plan.y).map(t => [t.uid, E.defaultReaction(b, actor, t, app.data.rules, skill)]));
+        // 对方的反应：被援护时由援护者防御
+        const react = t => {
+            const c = E.coverFor(b, actor, t, skill || null);
+            const v = c ? c.unit : t;
+            return [v.uid, E.defaultReaction(b, actor, v, app.data.rules, skill || null, !!c)];
+        };
+        if (!skill) return E.doAttack(b, actor, target, app.data.rules, Math.random, react(target)[1]);
+        const responses = Object.fromEntries(E.skillAffected(b, actor, skill, plan.x, plan.y).map(react));
         return E.doSkill(b, actor, skill, plan.x, plan.y, app.data.rules, Math.random, responses);
     });
     if (narrate) sendEngagementNarration(app, b, events);
@@ -663,8 +675,8 @@ function sendEngagementNarration(app, b, events) {
 }
 
 function askReaction(app, b, request) {
-    const { attacker, target, skill } = request;
-    const fallback = E.defaultReaction(b, attacker, target, app.data.rules, skill);
+    const { attacker, target, skill, cover } = request;
+    const fallback = E.defaultReaction(b, attacker, target, app.data.rules, skill, !!cover);
     if (target.side !== 'player' || target.object || !E.isFoe(attacker, target) || app.settings.ui.confirmDefense === false || app.isOpen === false) return fallback;
     return new Promise(resolve => {
         const ui = app.bs;
@@ -679,7 +691,7 @@ function askReaction(app, b, request) {
         // 有韧性时可以防御 / 反击，也可以主动承受以保留韧性；韧性耗尽时只能承受。都可以选择生成描写
         const braced = E.canBrace(target, app.data.rules);
         const tough = E.toughApplies(target, app.data.rules);
-        const responds = E.canRespond(b, attacker, target, app.data.rules, skill);
+        const responds = E.canRespond(b, attacker, target, app.data.rules, skill, !!cover);
         const generate = reaction => {
             if (ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
             settle({ reaction, narrate: true });
@@ -701,12 +713,13 @@ function askReaction(app, b, request) {
                 choices[(index + (e.shiftKey ? -1 : 1) + choices.length) % choices.length].focus();
             }
         } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': braced ? '选择反击、防御或承受' : '承受攻击' },
-            h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${target.name}`),
+            h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${cover ? `${cover.name}，由${target.name}援护承受` : target.name}`),
+            cover ? h('div.tsrpg-muted', `援护：${target.name}替${cover.name}挡下这次攻击，可以防御或承受，不能反击。`) : null,
             !braced ? [
                 h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`),
                 previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
             ] : [
-                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。'),
+                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : cover ? null : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。'),
                 h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
                 h('b', '选择承受时'), previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
                 h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。${tough ? `防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）；承受不消耗韧性，留给更危险的攻击。` : ''}`),

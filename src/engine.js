@@ -191,6 +191,8 @@ export const EFFECTS = {
     mov_up: { name: '移动力上升', group: '增益', stat: 'mov', sign: 1, value: 2, unit: '格', flat: true },
     regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
     taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
+    cover: { name: '援护', group: '增益', noValue: true, help: '施法者替目标承受下一次单体攻击（普通攻击或单体伤害技能），承受一次后消失；援护者不反击，可以防御。不能援护自己' },
+    cover_area: { name: '范围援护', group: '增益', value: 2, unit: '格', flat: true, help: '获得者周围此范围内的友军受到单体攻击时，都由获得者承受（不限次数）；不反击，可以防御。MAP / 范围攻击不会被援护' },
     atk_down: { name: '攻击力下降', group: '减益', stat: 'atk', sign: -1, value: 30, unit: '%', debuff: true },
     matk_down: { name: '魔攻下降', group: '减益', stat: 'matk', sign: -1, value: 30, unit: '%', debuff: true },
     def_down: { name: '防御力下降', group: '减益', stat: 'def', sign: -1, value: 30, unit: '%', debuff: true },
@@ -233,6 +235,7 @@ export function attractionTargets(b, unit) {
 export function effectLabel(e) {
     const def = EFFECTS[e.type];
     if (!def) return e.type;
+    if (e.type === 'cover' && e.byName) return `受${e.byName}援护`;
     if (def.noValue || (e.type === 'taunt' && !Number(e.value))) return def.name;
     if (e.type === 'taunt') return `${def.name}（${e.value}格）`;
     if (def.instant) return def.name;
@@ -458,28 +461,46 @@ export function defenseDamage(damage, rules) {
     return Math.max(Number(rules.minDamage ?? 1), Math.round(damage * (1 - reduction / 100)));
 }
 
-export function canRespond(b, attacker, defender, rules, skill = null) {
+export function canRespond(b, attacker, defender, rules, skill = null, covering = false) {
+    if (covering) return false; // 援护者不反击
     if (!isFoe(attacker, defender) || !canBrace(defender, rules) || !canCounter(b, defender, attacker)) return false;
     if (skill && (skill.kind === 'support' || ['mapLine', 'mapArea'].includes(skill.attackMode))) return false;
     return !!rules.counter || (!skill && attacker.attackOrder === 'last' && defender.attackOrder !== 'last');
 }
 
-export function defaultReaction(b, attacker, defender, rules, skill = null) {
+export function defaultReaction(b, attacker, defender, rules, skill = null, covering = false) {
     if (defender.object || !isFoe(attacker, defender) || !canBrace(defender, rules)) return 'none';
-    if (canRespond(b, attacker, defender, rules, skill)) return 'counter';
-    // 不受韧性系统约束的 AI 单位只在能反击时反击，不会防御
-    return toughApplies(defender, rules) || defender.side === 'player' ? 'defend' : 'none';
+    if (canRespond(b, attacker, defender, rules, skill, covering)) return 'counter';
+    // 不受韧性系统约束的 AI 单位只在能反击时反击，不会防御（援护时总是防御）
+    return covering || toughApplies(defender, rules) || defender.side === 'player' ? 'defend' : 'none';
+}
+
+/**
+ * 援护：攻击单体目标时，替它承受的单位。单体援护（目标身上的「援护」）优先，其次是范围援护中离目标最近的单位。
+ * MAP、范围技能和辅助技能不会被援护。返回 { unit, status? } 或 null。
+ */
+export function coverFor(b, attacker, target, skill = null) {
+    if (!isFoe(attacker, target) || target.hp <= 0) return null;
+    if (skill && (skill.kind === 'support' || ['mapLine', 'mapArea'].includes(skill.attackMode) || Number(skill.radius) > 0)) return null;
+    const able = p => p && p !== target && p !== attacker && p.hp > 0 && !p.retreated && !p.object && !isStunned(p) && isFoe(attacker, p);
+    const single = (target.statuses || []).find(s => s.type === 'cover' && able(getUnit(b, s.by)));
+    if (single) return { unit: getUnit(b, single.by), status: single };
+    const guards = alive(b).filter(p => able(p) && team(p) === team(target)
+        && (p.statuses || []).some(s => s.type === 'cover_area' && dist(p.x, p.y, target.x, target.y) <= Math.max(0, Number(s.value) || 0)));
+    guards.sort((p, q) => dist(p.x, p.y, target.x, target.y) - dist(q.x, q.y, target.x, target.y));
+    return guards.length ? { unit: guards[0] } : null;
 }
 
 /**
  * 结算前校正受击反应并扣除韧性：没有韧性只能承受（exhausted）；无法反击时的「反击」视为承受。
  * 必须在扣血前调用，返回 { reaction, exhausted?, tough? }。
  */
-function useReaction(b, attacker, defender, rules, reaction, skill = null) {
+function useReaction(b, attacker, defender, rules, reaction, skill = null, covering = false) {
     if (defender.object || !isFoe(attacker, defender)) return { reaction: 'none' };
     if (!canBrace(defender, rules)) return { reaction: 'none', exhausted: true };
     if (reaction === 'none') return toughApplies(defender, rules) ? { reaction: 'none', endured: true } : { reaction: 'none' }; // 主动承受：不防御不反击，保留韧性
     if (!['counter', 'defend'].includes(reaction)) return { reaction: 'none' };
+    if (reaction === 'counter' && covering) reaction = 'defend'; // 援护者不反击，按防御处理
     if (reaction === 'counter' && !canRespond(b, attacker, defender, rules, skill)) return { reaction: 'none' };
     if (!toughApplies(defender, rules)) return { reaction };
     const before = toughLeft(defender);
@@ -518,12 +539,18 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
     }
     const forced = taunters(b, unit);
     if (forced.length && !forced.includes(target)) throw new Error(`被嘲讽，只能攻击${forced.map(t => t.name).join('、')}`);
-    const used = useReaction(b, unit, target, rules, reaction);
+    // 援护：由援护者承受（命中、伤害、反应都按援护者计算），单体援护用掉即消失
+    const cover = coverFor(b, unit, target);
+    if (cover?.status) target.statuses = target.statuses.filter(s => s !== cover.status);
+    const covered = target;
+    if (cover) target = cover.unit;
+    const used = useReaction(b, unit, target, rules, reaction, null, !!cover);
     reaction = used.reaction;
     const first = reaction === 'counter' && unit.attackOrder === 'last' && target.attackOrder !== 'last' && canCounter(b, target, unit)
         ? { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) } : null;
     const ev = {
         type: 'attack', turn: b.turn, actor: ref(unit), target: ref(target),
+        ...(cover ? { coveredFor: ref(covered) } : {}),
         atkType: unit.atkType,
         ...(unit.hp > 0 ? strike(b, unit, target, unit.atkType, 100, hitChance(b, unit, target, rules), rules, rng, reaction === 'defend') : { hit: false, damage: 0, hpBefore: target.hp, hpAfter: target.hp, killed: false }),
         terrain: terrainAt(b, target.x, target.y).name,
@@ -635,6 +662,14 @@ function applyEffects(b, caster, t, effects, rules, rng) {
             out.push({ type: e.type, label: def.name, from, to: { x: t.x, y: t.y }, terrain: terrainAt(b, t.x, t.y).name, terrainDamage: terrainDamage(b, t) });
             continue;
         }
+        if (e.type === 'cover') {
+            if (t === caster) { out.push({ type: e.type, label: def.name, failed: '不能援护自己' }); continue; }
+            const turns = Math.max(1, Number(e.turns) || 1);
+            t.statuses = t.statuses.filter(x => x.type !== 'cover');
+            t.statuses.push({ type: 'cover', value: 0, turns, srcSide: caster.side, by: caster.uid, byName: caster.name });
+            out.push({ type: e.type, label: `受${caster.name}援护`, turns });
+            continue;
+        }
         if (e.type === 'heal' || e.type === 'heal_pct') {
             const amount = e.type === 'heal'
                 ? calcHeal(caster, t, value, rules, rng)
@@ -670,15 +705,25 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         unit.x = tx; unit.y = ty;
         teleport.terrainDamage = terrainDamage(b, unit);
     }
-    const affected = skillAffected(b, unit, skill, tx, ty);
-    if (!affected.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport) throw new Error('该位置没有可作用的目标');
+    const targets = skillAffected(b, unit, skill, tx, ty);
+    if (!targets.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport) throw new Error('该位置没有可作用的目标');
+    // 单体伤害技能可以被援护：改由援护者承受
+    const covers = new Map();
+    const affected = targets.map(t => {
+        const cover = coverFor(b, unit, t, skill);
+        if (!cover) return t;
+        if (cover.status) t.statuses = t.statuses.filter(s => s !== cover.status);
+        covers.set(cover.unit.uid, t);
+        return cover.unit;
+    });
     // 受击反应先于命中判定确定，未命中也已消耗韧性
     // 未提供反应视为无反应；明确传入 'none' 才算主动承受
-    const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'unset', skill)]));
+    const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'unset', skill, covers.has(t.uid))]));
     const results = affected.map(t => {
         const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
         if (used[t.uid].exhausted) r.exhausted = true;
         if (used[t.uid].endured) r.endured = true;
+        if (covers.has(t.uid)) r.coveredFor = ref(covers.get(t.uid));
         if (used[t.uid].tough) r.tough = used[t.uid].tough;
         const chance = skillHitChance(b, unit, skill, t, rules);
         if (!rollHit(chance, rng)) {
@@ -848,6 +893,18 @@ function effectScore(b, caster, t, e, rules) {
                 && alive(b).some(f => isFoe(f, t) && !f.object) ? 15 : 0;
         case 'recall':
             return 0; // 召回由玩家或 LLM 指挥官决定，内置 AI 不主动使用
+        case 'cover': {
+            // 替更脆弱、又可能被攻击的同伴挡刀
+            const near = alive(b).some(f => isFoe(f, t) && !f.object && dist(f.x, f.y, t.x, t.y) <= stat(f, 'mov') + f.rangeMax + 1);
+            return t !== caster && near && caster.hp > t.hp && t.hp / t.maxHp < 0.7 ? 9 : 0;
+        }
+        case 'cover_area': {
+            if (hasStatus(t, 'cover_area') || t.hp / t.maxHp < 0.5) return 0;
+            const r = Math.max(0, v);
+            const guarded = alive(b).filter(a => a !== t && team(a) === team(t) && dist(a.x, a.y, t.x, t.y) <= r
+                && alive(b).some(f => isFoe(f, a) && !f.object && dist(f.x, f.y, a.x, a.y) <= stat(f, 'mov') + f.rangeMax + 1)).length;
+            return Math.min(16, guarded * 4);
+        }
         case 'heal':
             return missing / t.maxHp < 0.3 ? 0 : Math.min(missing, calcHeal(caster, t, v, rules, Math.random, true));
         case 'heal_pct':
@@ -973,7 +1030,9 @@ function fieldDist(b, field, t) {
 }
 
 function* respondAttack(b, unit, target, rules, rng, events) {
-    const reaction = yield { attacker: unit, target, skill: null, eventsBefore: [...events] };
+    const cover = coverFor(b, unit, target);
+    // 被援护时由援护者选择反应（不能反击）
+    const reaction = yield { attacker: unit, target: cover ? cover.unit : target, cover: cover ? target : null, skill: null, eventsBefore: [...events] };
     return doAttack(b, unit, target, rules, rng, reaction);
 }
 
@@ -981,7 +1040,9 @@ function* respondSkill(b, unit, skill, tx, ty, rules, rng, events) {
     const responses = {};
     if (skill.kind !== 'support') {
         for (const target of skillAffected(b, unit, skill, tx, ty)) {
-            responses[target.uid] = yield { attacker: unit, target, skill, tx, ty, eventsBefore: [...events] };
+            const cover = coverFor(b, unit, target, skill);
+            const victim = cover ? cover.unit : target;
+            responses[victim.uid] = yield { attacker: unit, target: victim, cover: cover ? target : null, skill, tx, ty, eventsBefore: [...events] };
         }
     }
     return doSkill(b, unit, skill, tx, ty, rules, rng, responses);
@@ -1178,7 +1239,7 @@ function settleSteps(b, rules, steps) {
     let next = steps.next();
     while (!next.done) {
         const request = next.value;
-        next = steps.next(defaultReaction(b, request.attacker, request.target, rules, request.skill));
+        next = steps.next(defaultReaction(b, request.attacker, request.target, rules, request.skill, !!request.cover));
     }
     return next.value;
 }

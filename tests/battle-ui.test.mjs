@@ -600,6 +600,26 @@ test('有韧性时也可以选择承受：全额伤害、不反击、保留韧�
     assert.match(formatEvent(hit), /选择硬接这一击（保留韧性）/);
 });
 
+test('队友被援护时，受击窗口由援护者选择，只能防御或承受', async t => {
+    const { app, context, click } = setupExchange(t);
+    app.settings.ui.confirmDefense = true;
+    const b = context.chatMetadata[META_KEY], [hero, foe] = b.units;
+    const tank = E.makeBattleUnit(makeUnit({ id: 'tank', name: '格雷', hp: 100, def: 0 }), 'tank1', '格雷', 3, 0);
+    b.units.push(tank);
+    hero.statuses.push({ type: 'cover', value: 0, turns: 1, srcSide: 'player', by: tank.uid, byName: tank.name });
+    hero.acted = true; tank.acted = true;
+    const run = click('仅结算回合');
+    await waitForReaction(app);
+    const dialogButton = label => find(app.panel, n => n.tag === 'button' && n.textContent === label);
+    assert.ok(app.panel.textContent.includes('由格雷援护承受'));
+    assert.ok(dialogButton('防御') && dialogButton('承受') && !dialogButton('反击'));
+    dialogButton('防御').listeners.click();
+    await run;
+    assert.equal(hero.hp, 100, '被援护者没有受伤');
+    assert.equal(tank.hp, 90, '援护者防御后承受减半伤害');
+    assert.equal(foe.hp, 100, '援护者不反击');
+});
+
 test('韧性耗尽时受击只能承受，仍可生成描写；承受不减伤也不反击', async t => {
     const { app, context, click } = setupExchange(t);
     app.settings.ui.confirmDefense = true;

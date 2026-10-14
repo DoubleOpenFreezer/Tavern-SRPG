@@ -93,7 +93,10 @@ function formatEventBody(e) {
                 if (e.cancelled) return `${lead}${e.actor.name}被击败，未能发动攻击。`;
             }
             // hit 为 false 表示未命中（旧版事件没有该字段，视为命中）
-            let s = e.hit === false
+            let s = e.coveredFor
+                // 援护：攻击对象是被援护者，实际承受的是援护者
+                ? `${who(e.actor)} 对 ${who(e.coveredFor)} 发动${KIND[e.atkType]}普通攻击，${who(e.target)} 挺身援护，${e.hit === false ? `攻击被 ${e.target.name} 闪开了（未命中）` : `替其承受了 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`}`
+                : e.hit === false
                 ? `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，但被 ${e.target.name} 闪避了（未命中）`
                 : `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，造成 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`;
             if (e.killed) s += `，${e.target.name} 被击败`;
@@ -108,8 +111,10 @@ function formatEventBody(e) {
         case 'skill': {
             const parts = e.results.map(r => {
                 const counter = r.counter ? r.counter.hit === false ? '；反击未命中' : `；反击造成 ${r.counter.damage} 点伤害（${e.actor.name} ${hpChange(r.counter)}）${r.counter.killed ? '，施法者被击败' : ''}` : '';
-                if (r.missed) return `${who(r.target)} 闪避了（未命中）${counter}`;
+                const guard = r.coveredFor ? `挺身援护${r.coveredFor.name}，` : '';
+                if (r.missed) return `${who(r.target)} ${guard}闪避了（未命中）${counter}`;
                 const bits = [];
+                if (r.coveredFor) bits.push(`挺身援护${r.coveredFor.name}`);
                 if (r.exhausted) bits.push('韧性耗尽，无法防御');
                 if (r.endured) bits.push('选择硬接（保留韧性）');
                 if (r.reaction === 'defend') bits.push('选择防御');
