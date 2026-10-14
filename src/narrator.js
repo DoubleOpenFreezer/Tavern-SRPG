@@ -116,7 +116,7 @@ function formatEventBody(e) {
                 for (const ef of r.effects || []) {
                     if (ef.heal != null) continue;
                     if (ef.type === 'cleanse') bits.push(ef.removed?.length ? `被驱散了${ef.removed.map(x => `【${x}】`).join('')}` : '被净化（没有减益）');
-                    else if (ef.type === 'refresh') bits.push(ef.failed ? `再行动无效（${ef.failed}）` : '获得再次行动的机会');
+                    else if (ef.type === 'refresh') bits.push(ef.failed ? `额外行动无效（${ef.failed}）` : ef.now ? '立即获得再次行动的机会' : '获得额外行动，本回合可以行动两次');
                     else if (ef.type === 'recall') bits.push(ef.failed ? `召回无效（${ef.failed}）` : `被召回到 ${pos(ef.to)}${ef.terrain}${ef.terrainDamage ? `，${formatEvent(ef.terrainDamage).replace(/。$/, '')}` : ''}`);
                     else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
                 }

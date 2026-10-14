@@ -388,6 +388,7 @@ function unitCard(b, u, compact = false) {
             u.object ? h('span.tsrpg-tag', '建筑') : null,
             u.keyTarget ? h('span.tsrpg-tag.key', '★ 关键目标') : null,
             u.acted && !u.object ? h('span.tsrpg-tag', '已行动') : null,
+            E.extraActions(b, u) ? h('span.tsrpg-tag', `额外行动 ×${E.extraActions(b, u)}`) : null,
             u.attackOrder === 'last' ? h('span.tsrpg-tag', `${u.weaponName || '重武器'} · 后手`) : null,
             E.taunters(b, u).length ? h('span.tsrpg-tag.dead', `被嘲讽：只能攻击${E.taunters(b, u).map(t => t.name).join('、')}`) : null,
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),

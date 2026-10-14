@@ -181,7 +181,7 @@ export const EFFECTS = {
     heal: { name: '恢复HP', group: '立即', instant: true, value: 120, unit: '% MATK', help: '恢复 施法者MATK × 数值% 的生命' },
     heal_pct: { name: '恢复HP（按比例）', group: '立即', instant: true, value: 30, unit: '% 最大HP', help: '恢复 目标最大HP × 数值% 的生命' },
     cleanse: { name: '驱散减益', group: '立即', instant: true, noValue: true, help: '移除目标身上所有减益效果' },
-    refresh: { name: '再行动', group: '立即', instant: true, noValue: true, help: '已行动的同阵营目标本回合可以再行动一次；对自己无效，每个单位每回合最多一次' },
+    refresh: { name: '额外行动', group: '立即', instant: true, noValue: true, help: '本回合多行动一次：已行动的目标立即可以再行动；尚未行动的目标（包括自己）在下一次行动后可以再行动（可再移动）。只对正在行动的阵营有效，每个单位每回合最多获得一次' },
     recall: { name: '召回到身边', group: '立即', instant: true, noValue: true, help: '目标瞬间移动到施法者身边的空格（建筑不受影响）；会受到落脚地形伤害' },
     atk_up: { name: '攻击力上升', group: '增益', stat: 'atk', sign: 1, value: 30, unit: '%' },
     matk_up: { name: '魔攻上升', group: '增益', stat: 'matk', sign: 1, value: 30, unit: '%' },
@@ -523,7 +523,7 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
     if (reaction === 'counter' && !first && rules.counter && canCounter(b, target, unit)) {
         ev.counter = { atkType: target.atkType, ...strike(b, target, unit, target.atkType, 100, hitChance(b, target, unit, rules), rules, rng) };
     }
-    unit.acted = true; unit.moved = true;
+    endAction(b, unit);
     return ev;
 }
 
@@ -600,10 +600,16 @@ function applyEffects(b, caster, t, effects, rules, rng) {
         if (!def) continue;
         const value = Number(e.value) || 0;
         if (e.type === 'refresh') {
-            const why = t === caster ? '对自身无效' : t.object ? '建筑无法行动' : t.side !== b.phase ? '不是该阵营的行动阶段'
-                : !t.acted ? '尚未行动' : t.refreshTurn === b.turn ? '本回合已再行动过' : '';
-            if (!why) { t.acted = false; t.moved = false; t.refreshTurn = b.turn; }
-            out.push({ type: e.type, label: def.name, ...(why ? { failed: why } : {}) });
+            const why = t.object ? '建筑无法行动' : t.side !== b.phase ? '不是该阵营的行动阶段'
+                : t.boostTurn === b.turn ? '本回合已获得过额外行动' : '';
+            // 已行动：立即恢复行动；尚未行动（含施法者自己）：下一次行动结束后再行动一次
+            const now = !why && t.acted && t !== caster;
+            if (!why) {
+                t.boostTurn = b.turn;
+                if (now) { t.acted = false; t.moved = false; t.againTurn = b.turn; }
+                else { t.extraTurn = b.turn; t.extraLeft = 1; }
+            }
+            out.push({ type: e.type, label: def.name, ...(why ? { failed: why } : { now }) });
             continue;
         }
         if (e.type === 'recall') {
@@ -687,7 +693,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     const quick = isQuick(skill);
     // 速攻每回合最多一次：冷却至少 1（己方阶段开始时归零）
     if (Number(skill.cooldown) > 0 || quick) skill.cdLeft = Math.max(Number(skill.cooldown) || 0, quick ? 1 : 0);
-    if (!quick) { unit.acted = true; unit.moved = true; }
+    if (!quick) endAction(b, unit);
     return {
         type: 'skill', turn: b.turn, actor: ref(unit),
         skill: { name: skill.name, kind: skill.kind, target: side, desc: skill.desc || '', attackMode: skill.attackMode, mapTargets: skill.mapTargets, ...(quick ? { quick: true } : {}) },
@@ -697,8 +703,24 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     };
 }
 
-export function doWait(b, unit) {
+/** 本回合还剩几次额外行动 */
+export function extraActions(b, u) {
+    return u.extraTurn === b.turn ? Math.max(0, Number(u.extraLeft) || 0) : 0;
+}
+
+/** 结束一次行动：有额外行动时消耗它并恢复为未行动（可再移动），否则标记已行动 */
+export function endAction(b, unit) {
+    if (unit.hp > 0 && extraActions(b, unit) > 0) {
+        unit.extraLeft -= 1;
+        unit.acted = false; unit.moved = false; unit.againTurn = b.turn;
+        return true;
+    }
     unit.acted = true; unit.moved = true;
+    return false;
+}
+
+export function doWait(b, unit) {
+    endAction(b, unit);
     return { type: 'wait', turn: b.turn, actor: ref(unit), terrain: terrainAt(b, unit.x, unit.y).name };
 }
 
@@ -805,7 +827,7 @@ function effectScore(b, caster, t, e, rules) {
     const missing = t.maxHp - t.hp;
     switch (e.type) {
         case 'refresh':
-            return t !== caster && !t.object && t.side === b.phase && t.acted && t.refreshTurn !== b.turn && !isStunned(t)
+            return !t.object && t.side === b.phase && t.boostTurn !== b.turn && !isStunned(t)
                 && alive(b).some(f => isFoe(f, t) && !f.object) ? 15 : 0;
         case 'recall':
             return 0; // 召回由玩家或 LLM 指挥官决定，内置 AI 不主动使用
@@ -1130,7 +1152,7 @@ function* aiActSteps(b, unit, rules, rng = Math.random) {
         plan = better(bestAction(b, unit, nodes, rules, anyFoe), support);
     }
     if (plan && unit.hp > 0) yield* execute(b, unit, plan, rules, rng, events);
-    unit.acted = true;
+    else endAction(b, unit); // 没有攻击或技能（只移动 / 原地不动）也结束这次行动
     finish(b, events);
     return events;
 }
@@ -1280,9 +1302,9 @@ export function beginSidePhase(b, side) {
     return { events, group };
 }
 
-/** 本阶段被「再行动」的单位（已行动过、重新可行动），需要排到队尾再行动一次 */
+/** 本阶段通过「额外行动」重新可行动的单位，需要排到队尾再行动一次 */
 export function refreshedUnits(b, group, queue = []) {
-    return group.filter(g => g.hp > 0 && !g.retreated && !g.acted && g.refreshTurn === b.turn && !queue.includes(g));
+    return group.filter(g => g.hp > 0 && !g.retreated && !g.acted && g.againTurn === b.turn && !queue.includes(g));
 }
 
 /** 所有 AI 阵营行动完毕：增援 → 回合限制 → 新回合的我方阶段 */
@@ -1418,7 +1440,7 @@ function* planSteps(b, unit, plan, rules, rng = Math.random) {
     if (plan.kind === 'attack') events.push(yield* respondAttack(b, unit, getUnit(b, plan.target.uid), rules, rng, events));
     else if (plan.kind === 'skill') events.push(yield* respondSkill(b, unit, unit.skills.find(x => x.id === plan.skill.id), plan.tx, plan.ty, rules, rng, events));
     else if (plan.kind === 'wait' && !mv) events.push(doWait(b, unit));
-    unit.acted = true;
+    if (plan.kind === 'move' || (plan.kind === 'wait' && mv)) endAction(b, unit); // 只移动也算一次行动
     finish(b, events);
     return { events, usedPlan: true };
 }

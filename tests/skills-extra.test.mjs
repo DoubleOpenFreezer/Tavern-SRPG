@@ -64,24 +64,56 @@ test('传送：移动到射程内的空地，不能落在单位或不可通行�
     assert.throws(() => E.doSkill(b, h, { ...h.skills[0], cdLeft: 0 }, 3, 2, rules, fixed), /范围/);
 });
 
-test('再行动：已行动的同阵营目标可以再行动一次；对自己、未行动、本回合已再行动的目标无效', () => {
+test('额外行动：已行动的同伴立即再行动；尚未行动的目标（含自己）下次行动后再动；每回合只能获得一次', () => {
     const dance = sup([{ type: 'refresh' }], { id: 'r', name: '舞蹈', rangeMin: 1, rangeMax: 1 });
     const b = battle([hero({ skills: [dance] }), hero({ id: 'a', name: '骑士' }), orc()], [[0, 2], [1, 2], [9, 0]]);
     const [h, a] = b.units;
+    a.acted = true; a.moved = true;
     let ev = E.doSkill(b, h, h.skills[0], 1, 2, rules, fixed);
-    assert.match(formatEvent(ev), /再行动无效（尚未行动）/);
-    a.acted = true; a.moved = true; h.acted = false;
-    ev = E.doSkill(b, h, h.skills[0], 1, 2, rules, fixed);
     assert.equal(a.acted, false);
     assert.equal(a.moved, false);
-    assert.match(formatEvent(ev), /获得再次行动的机会/);
+    assert.match(formatEvent(ev), /立即获得再次行动的机会/);
     a.acted = true; h.acted = false;
     ev = E.doSkill(b, h, h.skills[0], 1, 2, rules, fixed);
     assert.equal(a.acted, true);
-    assert.match(formatEvent(ev), /本回合已再行动过/);
+    assert.match(formatEvent(ev), /本回合已获得过额外行动/);
 });
 
-test('敌方 AI：使用再行动让已出手的同伴再攻击一次，被再行动的单位排到队尾', () => {
+test('盗贼的速攻「快速行动」：一回合自己行动两次，第二次可以重新移动，下回合不残留', () => {
+    const haste = sup([{ type: 'refresh' }], { id: 'haste', name: '快速行动', target: 'self', quick: true });
+    const b = battle([hero({ id: 'thief', name: '盗贼', mov: 5, skills: [haste] }), orc({ hp: 100 }), orc({ id: 'o2', name: '兽人B', hp: 100 })], [[0, 2], [1, 2], [3, 2]]);
+    const [t, o1, o2] = b.units;
+    const ev = E.doSkill(b, t, t.skills[0], 0, 2, rules, fixed);
+    assert.match(formatEvent(ev), /获得额外行动，本回合可以行动两次/);
+    assert.equal(E.extraActions(b, t), 1);
+    E.doAttack(b, t, o1, rules, fixed);
+    assert.equal(t.acted, false, '第一次攻击后还能行动');
+    assert.equal(t.moved, false, '可以重新移动');
+    E.doMove(b, t, 3, 1);
+    E.doAttack(b, t, o2, rules, fixed);
+    assert.equal(t.acted, true, '第二次行动后结束');
+    assert.ok(o1.hp < 100 && o2.hp < 100);
+    assert.throws(() => E.doSkill(b, t, t.skills[0], t.x, t.y, rules, fixed), /冷却/, '每回合只能用一次');
+
+    // 获得后没用掉，回合结束即失效
+    const b2 = battle([hero({ id: 'thief', name: '盗贼', skills: [haste] }), orc()], [[0, 2], [9, 0]]);
+    const t2 = b2.units[0];
+    E.doSkill(b2, t2, t2.skills[0], 0, 2, rules, fixed);
+    E.endPlayerPhase(b2, rules, fixed);
+    assert.equal(E.extraActions(b2, t2), 0);
+});
+
+test('敌方 AI 盗贼：先用速攻快速行动，然后攻击两次', () => {
+    const haste = sup([{ type: 'refresh' }], { id: 'haste', name: '快速行动', target: 'self', quick: true });
+    const b = battle([hero({ hp: 200, def: 0 }), orc({ id: 'rogue', name: '盗贼', skills: [haste], atk: 20, ai: 'aggressive' })], [[4, 2], [5, 2]]);
+    const [h] = b.units;
+    const ev = E.endPlayerPhase(b, rules, fixed);
+    const mine = ev.filter(e => e.actor?.name === '盗贼' && ['skill', 'attack'].includes(e.type)).map(e => e.type === 'skill' ? e.skill.name : 'attack');
+    assert.deepEqual(mine, ['快速行动', 'attack', 'attack']);
+    assert.ok(h.hp < 200);
+});
+
+test('敌方 AI：用额外行动让已出手的同伴再攻击一次，该单位排到队尾', () => {
     const dance = sup([{ type: 'refresh' }], { id: 'r', name: '战鼓', rangeMin: 1, rangeMax: 1 });
     const b = battle([hero({ hp: 100, def: 0 }), orc({ id: 'brute', name: '蛮兵', atk: 20, rangeMin: 1, rangeMax: 1 }), orc({ id: 'drum', name: '鼓手', skills: [dance], atk: 1 })],
         [[4, 2], [5, 2], [6, 2]]);
