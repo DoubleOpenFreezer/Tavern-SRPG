@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultSettings, META_KEY, makeUnit, makeMap } from '../src/defaults.js';
+import { defaultSettings, META_KEY, makeUnit, makeMap, makeSkill } from '../src/defaults.js';
 import { newBattleUi, renderBattleTab } from '../src/ui/battle.js';
 import * as E from '../src/engine.js';
 import { renderProfilesTab } from '../src/ui/profiles-tab.js';
@@ -135,6 +135,28 @@ test('回溯回到之前回合的战场，聊天不受影响，可撤销返回',
     assert.equal(app.rewindDialog, null);
     click('撤销');
     assert.equal(context.chatMetadata[META_KEY].turn, 2);
+});
+
+test('速攻技能在移动前即可使用，不消耗行动，结算后仍可移动', async t => {
+    const { app, root, context, click } = setup(t);
+    const hero = app.data.units.find(u => u.side === 'player' && u.kind !== 'object');
+    hero.skills = [makeSkill({ id: 'rage', name: '鼓舞', kind: 'support', target: 'self', quick: true, effects: [{ type: 'atk_up', value: 30, turns: 2 }] })];
+    app.render();
+    click('开始战斗');
+    const b = context.chatMetadata[META_KEY];
+    const unit = b.units.find(u => u.defId === hero.id);
+    const board = find(root, n => n.classes.has('tsrpg-board'));
+    board.listeners.mousedown({ button: 0, target: { closest: () => board.children[unit.y * b.w + unit.x] } });
+    assert.equal(app.bs.mode, 'move');
+    await click('⚡鼓舞');
+    assert.ok(E.hasStatus(unit, 'atk_up'));
+    assert.equal(unit.acted, false);
+    assert.equal(app.bs.sel, unit.uid, '仍然选中');
+    assert.equal(app.bs.mode, 'move', '回到移动步骤');
+    assert.ok(find(root, n => n.tag === 'button' && n.textContent === '⚡鼓舞 本回合已用'));
+    click('原地行动');
+    click('待机');
+    assert.equal(unit.acted, true);
 });
 
 test('小窗结束战斗需要明确确认，取消保留进度，旧确认不能清除新战斗', t => {

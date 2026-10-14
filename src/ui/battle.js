@@ -229,6 +229,20 @@ function afterAction(app, b, events, before) {
     return completed;
 }
 
+/** 释放辅助技能；速攻技能不消耗行动，结算后保持选中并回到原来的步骤（移动前 / 移动后） */
+function castSkill(app, b, u, sk, x, y) {
+    const back = u.moved ? 'action' : 'move';
+    const done = act(app, b, () => E.doSkill(b, u, sk, x, y, app.data.rules));
+    if (!E.isQuick(sk) || !done) return done;
+    const restore = events => {
+        if (ST.getBattle() === b && !app.bs.busy && canControl(b, u)) {
+            app.bs.sel = u.uid; app.bs.mode = back; app.bs.skillBack = null; app.render();
+        }
+        return events;
+    };
+    return done.then ? done.then(restore) : restore(done);
+}
+
 function act(app, b, fn) {
     if (app.bs.busy || b.paused || ST.getBattle() !== b) return;
     try {
@@ -288,9 +302,9 @@ function onCell(app, b, x, y) {
                 ui.engagement = { unitId: u.uid, skillId: sk.id, x, y };
                 app.render(); return;
             }
-            return act(app, b, () => E.doSkill(b, u, sk, x, y, app.data.rules));
+            return castSkill(app, b, u, sk, x, y);
         }
-        ui.mode = 'action'; ui.skillId = null;
+        ui.mode = ui.skillBack || 'action'; ui.skillId = null; ui.skillBack = null;
         app.render();
         return;
     }
@@ -341,6 +355,7 @@ function onHover(app, b, x, y, refs) {
                 return `${t.name} ${bits.join(' ')}`.trim();
             }).join('，');
             if (preview) preview = `【${sk.name}】预计：${preview}${fx.length ? `；附加 ${fx.join('、')}` : ''}`;
+            if (E.skillTargetSide(sk) === 'tile') preview = `【${sk.name}】传送到 (${x + 1},${y + 1})${E.terrainAt(b, x, y).name}${fx.length ? `；附加 ${fx.join('、')}` : ''}`;
         }
     }
     const at = E.unitAt(b, x, y);
@@ -411,10 +426,29 @@ function actionPanel(app, b, u) {
     const ui = app.bs;
     if (ui.busy || !u || u.side !== 'player' || u.object || b.phase !== 'player' || b.result) return null;
     if (E.isStunned(u)) return h('div.tsrpg-warn', '眩晕中，本回合无法行动。');
-    if (ui.mode === 'move') {
+    const skillButton = sk => {
+        const tiles = E.skillTargetTiles(b, u, sk);
+        const ok = E.skillUsable(sk) && tiles.length;
+        const side = E.skillTargetSide(sk);
+        let label = `${E.isQuick(sk) ? '⚡' : ''}${sk.name}`;
+        if (sk.cdLeft > 0) label += E.isQuick(sk) && Number(sk.cooldown) <= 1 ? ' 本回合已用' : ` ⏳第${E.readyTurn(b, u, sk)}回合`;
+        else if (sk.uses) label += ` ${sk.usesLeft}/${sk.uses}`;
+        // 只作用于自身的技能直接释放
+        const onClick = side === 'self'
+            ? () => castSkill(app, b, u, sk, u.x, u.y)
+            : () => { ui.skillBack = ui.mode === 'move' ? 'move' : 'action'; ui.mode = 'skill'; ui.skillId = sk.id; app.render(); };
+        return button(label, onClick, {
+            icon: sk.kind !== 'support' ? 'fa-wand-sparkles' : side === 'tile' ? 'fa-location-arrow' : side === 'enemy' ? 'fa-skull' : sk.effects.some(e => e.type.startsWith('heal')) ? 'fa-heart' : 'fa-shield-heart',
+            disabled: !ok, cls: ui.mode === 'skill' && ui.skillId === sk.id ? 'active' : '',
+            title: `${skillSummary(sk)}${sk.desc ? `\n${sk.desc}` : ''}`,
+        });
+    };
+    const quick = u.skills.filter(E.isQuick);
+    if (ui.mode === 'move' || (ui.mode === 'skill' && ui.skillBack === 'move')) {
         return h('div.tsrpg-actions',
-            h('div.tsrpg-muted', '点击蓝色格子移动（点击自身＝原地行动）。'),
-            button('原地行动', () => { pushUndo(app, b); ui.mode = 'action'; u.moved = true; app.render(); }, { icon: 'fa-hand' }),
+            h('div.tsrpg-muted', `点击蓝色格子移动（点击自身＝原地行动）。${quick.length ? '⚡速攻技能不消耗行动，可以先用。' : ''}`),
+            button('原地行动', () => { pushUndo(app, b); ui.mode = 'action'; ui.skillBack = null; u.moved = true; app.render(); }, { icon: 'fa-hand' }),
+            quick.map(skillButton),
         );
     }
     if (!['action', 'attack', 'skill'].includes(ui.mode)) return null;
@@ -422,23 +456,7 @@ function actionPanel(app, b, u) {
     return h('div.tsrpg-actions',
         button(`攻击${targets.length ? `(${targets.length})` : ''}`, () => { ui.mode = 'attack'; app.render(); },
             { icon: 'fa-khanda', disabled: !targets.length, cls: ui.mode === 'attack' ? 'active' : '' }),
-        u.skills.map(sk => {
-            const tiles = E.skillTargetTiles(b, u, sk);
-            const ok = E.skillUsable(sk) && tiles.length;
-            const side = E.skillTargetSide(sk);
-            let label = sk.name;
-            if (sk.cdLeft > 0) label += ` ⏳第${E.readyTurn(b, u, sk)}回合`;
-            else if (sk.uses) label += ` ${sk.usesLeft}/${sk.uses}`;
-            // 只作用于自身的技能直接释放
-            const onClick = side === 'self'
-                ? () => act(app, b, () => E.doSkill(b, u, sk, u.x, u.y, app.data.rules))
-                : () => { ui.mode = 'skill'; ui.skillId = sk.id; app.render(); };
-            return button(label, onClick, {
-                icon: sk.kind !== 'support' ? 'fa-wand-sparkles' : side === 'enemy' ? 'fa-skull' : sk.effects.some(e => e.type.startsWith('heal')) ? 'fa-heart' : 'fa-shield-heart',
-                disabled: !ok, cls: ui.mode === 'skill' && ui.skillId === sk.id ? 'active' : '',
-                title: `${skillSummary(sk)}${sk.desc ? `\n${sk.desc}` : ''}`,
-            });
-        }),
+        u.skills.map(skillButton),
         button('待机', () => act(app, b, () => E.doWait(b, u)), { icon: 'fa-hourglass' }),
         button('撤销移动', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length }),
     );

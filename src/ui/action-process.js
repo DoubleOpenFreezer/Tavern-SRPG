@@ -35,15 +35,23 @@ export function* actionFrames(before, after, events) {
                 break;
             case 'skill': {
                 yield frame(`${e.actor.name} 使用 ${e.skill.name}`, [effect(actor, 'm-acting')], e.area || []);
+                if (e.teleport && actor) {
+                    actor.x = e.teleport.to.x; actor.y = e.teleport.to.y;
+                    yield frame(`${e.actor.name} 传送`, [effect(actor, 'm-acting')]);
+                }
                 const effects = [];
                 for (const r of e.results) {
                     const target = unit(r.target.uid);
                     if (!target) continue;
+                    for (const ef of r.effects || []) {
+                        if (ef.type === 'recall' && ef.to) { target.x = ef.to.x; target.y = ef.to.y; }
+                        if (ef.type === 'refresh' && !ef.failed) { target.acted = false; target.moved = false; }
+                    }
                     target.hp = r.hpAfter;
                     const delta = r.hpAfter - r.hpBefore;
                     effects.push(effect(target, r.reaction === 'defend' ? 'm-guard' : 'm-impact', r.missed ? 'MISS' : delta ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : '效果'));
                 }
-                if (actor) { actor.moved = true; actor.acted = true; }
+                if (actor && !e.skill.quick) { actor.moved = true; actor.acted = true; }
                 yield frame(`${e.skill.name} 命中${e.results.length}个目标`, effects, e.area || []);
                 for (const r of e.results) {
                     if (r.counter) yield* hit(r.target.uid, e.actor.uid, r.counter, `${r.target.name} 反击`);

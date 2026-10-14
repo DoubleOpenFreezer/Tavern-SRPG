@@ -116,14 +116,22 @@ function formatEventBody(e) {
                 for (const ef of r.effects || []) {
                     if (ef.heal != null) continue;
                     if (ef.type === 'cleanse') bits.push(ef.removed?.length ? `被驱散了${ef.removed.map(x => `【${x}】`).join('')}` : '被净化（没有减益）');
+                    else if (ef.type === 'refresh') bits.push(ef.failed ? `再行动无效（${ef.failed}）` : '获得再次行动的机会');
+                    else if (ef.type === 'recall') bits.push(ef.failed ? `召回无效（${ef.failed}）` : `被召回到 ${pos(ef.to)}${ef.terrain}${ef.terrainDamage ? `，${formatEvent(ef.terrainDamage).replace(/。$/, '')}` : ''}`);
                     else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
                 }
                 const hp = r.hpBefore !== r.hpAfter ? `（${hpChange(r)}）` : '';
+                if (e.teleport && !bits.length && !hp) return ''; // 纯传送：只描述位移
                 return `${who(r.target)} ${bits.join('，') || '不受影响'}${hp}${r.killed ? '，被击败' : ''}${counter}`;
-            });
+            }).filter(Boolean);
+            if (e.teleport) {
+                const t = e.teleport;
+                parts.unshift(`从 ${pos(t.from)} 瞬间传送到 ${pos(t.to)}${t.terrain}${t.terrainDamage ? `，${formatEvent(t.terrainDamage).replace(/。$/, '')}` : ''}`);
+            }
             const desc = e.skill.desc ? `（${e.skill.desc}）` : '';
             const mode = e.skill.attackMode === 'mapLine' ? 'MAP直线' : e.skill.attackMode === 'mapArea' ? 'MAP范围' : '';
-            return `${who(e.actor)} 释放${mode}${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}：${parts.join('；') || '范围内没有目标'}。`;
+            const quick = e.skill.quick ? '（速攻，不消耗行动）' : '';
+            return `${who(e.actor)} 释放${mode}${KIND[e.skill.kind]}技能【${e.skill.name}】${desc}${quick}：${parts.join('；') || '范围内没有目标'}。`;
         }
         case 'dot':
             return e.effect === 'poison'
@@ -234,7 +242,7 @@ export function upcomingWaves(battle) {
     }).filter(Boolean).join('；');
 }
 
-const TARGET_NAMES = { ally: '友方', enemy: '敌方', self: '自身' };
+const TARGET_NAMES = { ally: '友方', enemy: '敌方', self: '自身', tile: '传送自身到空地' };
 
 /** 技能的一行说明，例如「辅助·友方 射程0-2 范围1 冷却3回合｜防御力上升30%（2回合）」 */
 export function skillSummary(sk) {
@@ -242,6 +250,7 @@ export function skillSummary(sk) {
     const parts = [sk.kind === 'support' ? `辅助·${TARGET_NAMES[side]}` : `${KIND[sk.kind]} ${sk.power}%`];
     if (side !== 'self' && sk.attackMode !== 'mapLine') parts.push(`射程${sk.rangeMin}-${sk.rangeMax}`);
     if (side !== 'self' && Number(sk.radius) && !['mapLine', 'mapArea'].includes(sk.attackMode)) parts.push(`范围${sk.radius}`);
+    if (sk.kind === 'support' && sk.quick) parts.push('速攻（不消耗行动，每回合一次）');
     if (Number(sk.cooldown) > 1) parts.push(`冷却${sk.cooldown}回合`);
     if (side === 'enemy' && sk.sureHit) parts.push('必中');
     else if (side === 'enemy' && Number(sk.hitMod)) parts.push(`命中${sk.hitMod > 0 ? '+' : ''}${sk.hitMod}%`);

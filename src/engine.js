@@ -44,7 +44,9 @@ export function enterCost(b, unit, x, y) {
     const t = terrainAt(b, x, y);
     if (unit.flying) return t.flyable === false ? IMPASSABLE : 1;
     if (t.passable === false) return IMPASSABLE;
-    return Math.max(1, Number(t.moveCost) || 1);
+    const cost = Number(t.moveCost);
+    return cost > 0 ? cost : 1; // 允许小数（如 0.5＝移动力翻倍），0 或无效时按 1 计
+
 }
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -98,7 +100,7 @@ export function reachable(b, unit, maxMove = stat(unit, 'mov'), includeOccupied 
             const occ = unitAt(b, nx, ny);
             if (occ && occ !== unit && isFoe(occ, unit)) continue;
             const c = cur.cost + enterCost(b, unit, nx, ny);
-            if (c > maxMove) continue;
+            if (c > maxMove + 1e-9) continue; // 小数消耗累加的浮点误差
             const key = `${nx},${ny}`;
             if (c < (best.get(key)?.cost ?? Infinity)) {
                 const node = { x: nx, y: ny, cost: c, prev: `${cur.x},${cur.y}` };
@@ -179,6 +181,8 @@ export const EFFECTS = {
     heal: { name: '恢复HP', group: '立即', instant: true, value: 120, unit: '% MATK', help: '恢复 施法者MATK × 数值% 的生命' },
     heal_pct: { name: '恢复HP（按比例）', group: '立即', instant: true, value: 30, unit: '% 最大HP', help: '恢复 目标最大HP × 数值% 的生命' },
     cleanse: { name: '驱散减益', group: '立即', instant: true, noValue: true, help: '移除目标身上所有减益效果' },
+    refresh: { name: '再行动', group: '立即', instant: true, noValue: true, help: '已行动的同阵营目标本回合可以再行动一次；对自己无效，每个单位每回合最多一次' },
+    recall: { name: '召回到身边', group: '立即', instant: true, noValue: true, help: '目标瞬间移动到施法者身边的空格（建筑不受影响）；会受到落脚地形伤害' },
     atk_up: { name: '攻击力上升', group: '增益', stat: 'atk', sign: 1, value: 30, unit: '%' },
     matk_up: { name: '魔攻上升', group: '增益', stat: 'matk', sign: 1, value: 30, unit: '%' },
     def_up: { name: '防御力上升', group: '增益', stat: 'def', sign: 1, value: 30, unit: '%' },
@@ -281,9 +285,14 @@ export function taunters(b, unit) {
         s.type === 'taunt' && (!Number(s.value) || dist(t.x, t.y, px, py) <= Number(s.value))));
 }
 
-/** 技能作用于哪一方：enemy / ally / self */
+/** 技能作用于哪一方：enemy / ally / self / tile（传送自身到空地） */
 export function skillTargetSide(skill) {
     return skill.kind === 'support' ? (skill.target || 'ally') : 'enemy';
+}
+
+/** 速攻：辅助技能，不消耗行动，每回合最多一次 */
+export function isQuick(skill) {
+    return !!skill.quick && skill.kind === 'support';
 }
 
 function healOnly(skill) {
@@ -537,7 +546,7 @@ export function skillAreaTiles(b, unit, skill, tx, ty) {
 
 export function skillAffected(b, unit, skill, tx, ty) {
     const side = skillTargetSide(skill);
-    if (side === 'self') return unit.hp > 0 ? [unit] : [];
+    if (side === 'self' || side === 'tile') return unit.hp > 0 ? [unit] : [];
     const area = new Set(skillAreaTiles(b, unit, skill, tx, ty).map(([x, y]) => `${x},${y}`));
     return alive(b).filter(t => {
         if (!area.has(`${t.x},${t.y}`)) return false;
@@ -549,6 +558,11 @@ export function skillAffected(b, unit, skill, tx, ty) {
 export function skillTargetTiles(b, unit, skill, fromX = unit.x, fromY = unit.y) {
     const side = skillTargetSide(skill);
     if (side === 'self') return [[fromX, fromY]];
+    if (side === 'tile') {
+        // 传送：射程内能站立的空地
+        return tilesInRange(b, fromX, fromY, Math.max(1, Number(skill.rangeMin) || 0), Number(skill.rangeMax) || 0)
+            .filter(([x, y]) => !unitAt(b, x, y) && isFinite(enterCost(b, unit, x, y)));
+    }
     const forced = side === 'enemy' ? taunters(b, unit) : [];
     const mapLine = skill.attackMode === 'mapLine';
     const tiles = mapLine ? DIRS.flatMap(([dx, dy]) => {
@@ -567,13 +581,39 @@ export function skillTargetTiles(b, unit, skill, fromX = unit.x, fromY = unit.y)
 }
 
 /** 对目标施加技能附带的效果，返回结果描述 */
-function applyEffects(caster, t, effects, rules, rng) {
+/** 召回：施法者身边离目标最近、目标能站立的空格 */
+function recallTile(b, caster, t) {
+    for (let r = 1; r <= 3; r++) {
+        const free = tilesInRange(b, caster.x, caster.y, r, r)
+            .filter(([x, y]) => (!unitAt(b, x, y) || unitAt(b, x, y) === t) && isFinite(enterCost(b, t, x, y)))
+            .sort((p, q) => dist(p[0], p[1], t.x, t.y) - dist(q[0], q[1], t.x, t.y));
+        if (free.length) return free[0];
+    }
+    return null;
+}
+
+function applyEffects(b, caster, t, effects, rules, rng) {
     const out = [];
     t.statuses ||= [];
     for (const e of effects || []) {
         const def = EFFECTS[e.type];
         if (!def) continue;
         const value = Number(e.value) || 0;
+        if (e.type === 'refresh') {
+            const why = t === caster ? '对自身无效' : t.object ? '建筑无法行动' : t.side !== b.phase ? '不是该阵营的行动阶段'
+                : !t.acted ? '尚未行动' : t.refreshTurn === b.turn ? '本回合已再行动过' : '';
+            if (!why) { t.acted = false; t.moved = false; t.refreshTurn = b.turn; }
+            out.push({ type: e.type, label: def.name, ...(why ? { failed: why } : {}) });
+            continue;
+        }
+        if (e.type === 'recall') {
+            const to = t.object || t === caster ? null : recallTile(b, caster, t);
+            if (!to || (to[0] === t.x && to[1] === t.y)) { out.push({ type: e.type, label: def.name, failed: t.object ? '建筑无法移动' : t === caster ? '对自身无效' : to ? '已在身边' : '身边没有空位' }); continue; }
+            const from = { x: t.x, y: t.y };
+            t.x = to[0]; t.y = to[1];
+            out.push({ type: e.type, label: def.name, from, to: { x: t.x, y: t.y }, terrain: terrainAt(b, t.x, t.y).name, terrainDamage: terrainDamage(b, t) });
+            continue;
+        }
         if (e.type === 'heal' || e.type === 'heal_pct') {
             const amount = e.type === 'heal'
                 ? calcHeal(caster, t, value, rules, rng)
@@ -602,8 +642,15 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     } else if (!skillTargetTiles(b, unit, skill).some(([x, y]) => x === tx && y === ty)) {
         throw new Error('目标不在技能范围内');
     }
+    let teleport = null;
+    if (side === 'tile') {
+        // 传送不经过路径、无视移动消耗，但会受到落脚地形伤害
+        teleport = { from: { x: unit.x, y: unit.y }, to: { x: tx, y: ty }, terrain: terrainAt(b, tx, ty).name };
+        unit.x = tx; unit.y = ty;
+        teleport.terrainDamage = terrainDamage(b, unit);
+    }
     const affected = skillAffected(b, unit, skill, tx, ty);
-    if (!affected.length && !['mapLine', 'mapArea'].includes(skill.attackMode)) throw new Error('该位置没有可作用的目标');
+    if (!affected.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport) throw new Error('该位置没有可作用的目标');
     // 受击反应先于命中判定确定，未命中也已消耗韧性
     const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'none', skill)]));
     const results = affected.map(t => {
@@ -622,7 +669,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
             r.killed = applyDamage(t, r.damage).killed;
         }
         if (t.hp > 0) {
-            r.effects = applyEffects(unit, t, skill.effects, rules, rng);
+            r.effects = applyEffects(b, unit, t, skill.effects, rules, rng);
             const healed = r.effects.reduce((n, e) => n + (e.heal || 0), 0);
             if (r.effects.some(e => e.heal != null)) r.heal = healed;
         }
@@ -637,13 +684,16 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         }
     }
     if (skill.uses) skill.usesLeft = Math.max(0, (skill.usesLeft ?? skill.uses) - 1);
-    if (Number(skill.cooldown) > 0) skill.cdLeft = Number(skill.cooldown);
-    unit.acted = true; unit.moved = true;
+    const quick = isQuick(skill);
+    // 速攻每回合最多一次：冷却至少 1（己方阶段开始时归零）
+    if (Number(skill.cooldown) > 0 || quick) skill.cdLeft = Math.max(Number(skill.cooldown) || 0, quick ? 1 : 0);
+    if (!quick) { unit.acted = true; unit.moved = true; }
     return {
         type: 'skill', turn: b.turn, actor: ref(unit),
-        skill: { name: skill.name, kind: skill.kind, target: side, desc: skill.desc || '', attackMode: skill.attackMode, mapTargets: skill.mapTargets },
+        skill: { name: skill.name, kind: skill.kind, target: side, desc: skill.desc || '', attackMode: skill.attackMode, mapTargets: skill.mapTargets, ...(quick ? { quick: true } : {}) },
         area: skillAreaTiles(b, unit, skill, tx, ty),
         at: { x: tx, y: ty }, results,
+        ...(teleport ? { teleport } : {}),
     };
 }
 
@@ -754,6 +804,11 @@ function effectScore(b, caster, t, e, rules) {
     const v = Number(e.value) || 0;
     const missing = t.maxHp - t.hp;
     switch (e.type) {
+        case 'refresh':
+            return t !== caster && !t.object && t.side === b.phase && t.acted && t.refreshTurn !== b.turn && !isStunned(t)
+                && alive(b).some(f => isFoe(f, t) && !f.object) ? 15 : 0;
+        case 'recall':
+            return 0; // 召回由玩家或 LLM 指挥官决定，内置 AI 不主动使用
         case 'heal':
             return missing / t.maxHp < 0.3 ? 0 : Math.min(missing, calcHeal(caster, t, v, rules, Math.random, true));
         case 'heal_pct':
@@ -773,7 +828,7 @@ function effectScore(b, caster, t, e, rules) {
 /**
  * 在 (x,y) 位置能做出的所有行动及估值
  * @param {(t:object)=>boolean} filter 攻击类行动必须命中至少一个满足条件的目标
- * @param {'attack'|'support'} mode attack：普通攻击与伤害技能；support：辅助技能
+ * @param {'attack'|'support'|'quick'} mode attack：普通攻击与伤害技能；support：辅助技能（不含速攻）；quick：速攻辅助技能
  */
 function candidatesAt(b, unit, x, y, rules, filter, mode) {
     const ox = unit.x, oy = unit.y;
@@ -797,11 +852,13 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
         }
     }
     for (const sk of unit.skills || []) {
-        if (!skillUsable(sk) || (sk.kind === 'support') !== (mode === 'support')) continue;
+        if (!skillUsable(sk) || (sk.kind === 'support') !== (mode !== 'attack')) continue;
+        // 速攻单独在行动前使用；传送由玩家或 LLM 决定落点，内置 AI 不使用
+        if (isQuick(sk) !== (mode === 'quick') || skillTargetSide(sk) === 'tile') continue;
         for (const [tx, ty] of skillTargetTiles(b, unit, sk)) {
             const aff = skillAffected(b, unit, sk, tx, ty);
             let score = 0;
-            if (mode === 'support') {
+            if (mode !== 'attack') {
                 for (const t of aff) {
                     const hit = skillHitChance(b, unit, sk, t, rules) / 100;
                     for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * hit;
@@ -988,6 +1045,16 @@ function cautiousAdvance(b, unit, nodes, rules, threat) {
     return best && (best.x !== unit.x || best.y !== unit.y) ? best : null;
 }
 
+/** 行动前先使用有价值的速攻技能（不消耗行动；每个速攻技能每回合一次） */
+function useQuickSkills(b, unit, rules, rng, events) {
+    for (let i = 0; i < 10 && unit.hp > 0 && !b.result; i++) {
+        const c = bestActionAt(b, unit, unit.x, unit.y, rules, t => isFoe(t, unit), 'quick');
+        if (!c) return;
+        events.push(doSkill(b, unit, c.skill, c.tx, c.ty, rules, rng));
+        finish(b, events);
+    }
+}
+
 /**
  * 让单个 AI 单位行动，返回事件列表
  * - 主动出击：按距离从近到远，攻击最近的能打到的目标；都打不到就朝最近的目标前进，途中顺手攻击射程内的敌人
@@ -1006,6 +1073,8 @@ function* aiActSteps(b, unit, rules, rng = Math.random) {
         events.push({ type: 'stunned', turn: b.turn, actor: ref(unit) });
         return events;
     }
+    useQuickSkills(b, unit, rules, rng, events);
+    if (unit.hp <= 0 || b.result) { unit.acted = true; return events; }
     const nodes = [...(unit.ai === 'stationary'
         ? [{ x: unit.x, y: unit.y, cost: 0 }]
         : reachable(b, unit).values())];
@@ -1211,6 +1280,11 @@ export function beginSidePhase(b, side) {
     return { events, group };
 }
 
+/** 本阶段被「再行动」的单位（已行动过、重新可行动），需要排到队尾再行动一次 */
+export function refreshedUnits(b, group, queue = []) {
+    return group.filter(g => g.hp > 0 && !g.retreated && !g.acted && g.refreshTurn === b.turn && !queue.includes(g));
+}
+
 /** 所有 AI 阵营行动完毕：增援 → 回合限制 → 新回合的我方阶段 */
 export function finishRound(b) {
     const events = [];
@@ -1235,10 +1309,13 @@ export function endPlayerPhase(b, rules, rng = Math.random) {
         const { events: ev, group } = beginSidePhase(b, side);
         events.push(...ev);
         if (b.result) return events;
-        for (const u of group) {
+        const queue = [...group];
+        while (queue.length) {
+            const u = queue.shift();
             if (u.hp <= 0 || u.retreated) continue;
             events.push(...aiAct(b, u, rules, rng));
             if (b.result) return events;
+            queue.push(...refreshedUnits(b, group, queue));
         }
     }
     events.push(...finishRound(b));
@@ -1327,6 +1404,11 @@ export function planValid(b, unit, plan) {
 function* planSteps(b, unit, plan, rules, rng = Math.random) {
     if (!planValid(b, unit, plan)) return { events: yield* aiActSteps(b, unit, rules, rng), usedPlan: false };
     const events = [];
+    useQuickSkills(b, unit, rules, rng, events);
+    if (!planValid(b, unit, plan)) {
+        events.push(...(yield* aiActSteps(b, unit, rules, rng)));
+        return { events, usedPlan: false };
+    }
     const mv = doMove(b, unit, plan.x, plan.y);
     if (mv) events.push(mv);
     if (unit.hp <= 0) {

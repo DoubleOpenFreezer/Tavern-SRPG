@@ -190,11 +190,15 @@ export async function runAiPhases(app, b, { quiet = false, chooseReaction, proce
             ({ picks, options } = await askCommander(app, b, side, group));
             check();
         }
-        for (const u of group) {
+        // 被「再行动」的单位排到队尾再行动一次（第二次交给内置 AI）
+        const queue = [...group], done = new Set();
+        while (queue.length) {
+            const u = queue.shift();
             if (b.result) break;
             if (u.hp <= 0 || u.retreated) continue;
             check();
-            const pick = picks.get(u.uid);
+            const pick = done.has(u) ? null : picks.get(u.uid);
+            done.add(u);
             const plan = pick && pick.index > 0 ? options.get(u.uid)?.[pick.index - 1] : null;
             let processBefore = structuredClone(b), played = 0;
             const choose = async request => {
@@ -224,6 +228,7 @@ export async function runAiPhases(app, b, { quiet = false, chooseReaction, proce
             check();
             events.push(...evs);
             await process(processBefore, evs.slice(played));
+            queue.push(...E.refreshedUnits(b, group, queue));
         }
     }
     if (!b.result) {

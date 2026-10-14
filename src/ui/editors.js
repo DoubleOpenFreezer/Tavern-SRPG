@@ -8,7 +8,7 @@ const SIDES = [['player', '我方'], ['ally', '友军'], ['enemy', '敌方']];
 const AIS = [['aggressive', '主动出击（会接近目标）'], ['defensive', '原地迎击（只攻击可触及的目标）'], ['stationary', '固守不动（不移动）'],
     ['ranged', '远程游击（从安全位置攻击，不踏入敌人射程）'], ['flee', '逃跑（敌人接近时逃开，不攻击）']];
 const KINDS = [['physical', '物理伤害（ATK vs DEF）'], ['magical', '魔法伤害（MATK vs MDEF）'], ['support', '辅助（治疗 / 增益 / 减益）']];
-const TARGETS = [['ally', '友方（含自己）'], ['enemy', '敌方'], ['self', '仅自己']];
+const TARGETS = [['ally', '友方（含自己）'], ['enemy', '敌方'], ['self', '仅自己'], ['tile', '空地（传送自身）']];
 
 export function newEditorUi() {
     return { unitId: null, skillUnitId: null, skillId: null, terrainId: null, mapId: null, tool: 'paint', brush: 'plain', placeUnit: null, wbBook: null };
@@ -230,6 +230,7 @@ function skillForm(app, u, sk) {
     const set = (k, rerender = false) => v => { sk[k] = v; app.save(); if (rerender) app.render(); };
     const support = sk.kind === 'support';
     const self = support && sk.target === 'self';
+    const tile = support && sk.target === 'tile';
     const map = ['mapLine', 'mapArea'].includes(sk.attackMode);
     return h('div.tsrpg-skill',
         h('div.tsrpg-grid3',
@@ -252,10 +253,14 @@ function skillForm(app, u, sk) {
             })),
             map ? field('MAP作用对象', select([['all', '敌我全部（不伤害自己）'], ['enemy', '仅敌方']], sk.mapTargets, set('mapTargets', true))) : null),
         map ? h('small.tsrpg-muted', 'MAP不触发反击或后手交换；同时攻击所有覆盖目标。默认会误伤友军，可切换为仅敌方。') : null,
+        tile ? h('small.tsrpg-muted', '传送：点击射程内的空地，施法者瞬间移动过去，无视路径和移动消耗（落脚地形伤害照常）。下方的效果作用于施法者自己，可以不添加。') : null,
+        support ? h('div.tsrpg-row',
+            checkbox('速攻', !!sk.quick, set('quick', true), '选中角色后随时使用（移动前后都可以），不消耗行动；每回合最多使用一次'),
+            h('small.tsrpg-muted', '速攻：不消耗行动和攻击机会，每回合一次；敌方 AI 会在行动前使用')) : null,
         h('div.tsrpg-grid5',
             self || sk.attackMode === 'mapLine' ? null : field('射程最小', numInput(sk.rangeMin, set('rangeMin'), { min: 0 }), '0＝可以对自己所在格使用'),
             self || sk.attackMode === 'mapLine' ? null : field('射程最大', numInput(sk.rangeMax, set('rangeMax'), { min: 0 })),
-            sk.attackMode === 'mapLine' ? field('直线长度', numInput(sk.lineLength, set('lineLength'), { min: 1, max: 100 }), '从自己向上下左右延伸；点击方向上的任一格') : self ? null : field('范围半径', numInput(sk.radius, set('radius'), { min: sk.attackMode === 'mapArea' ? 1 : 0 }), '按格子距离计算菱形范围；普通技能0＝单体'),
+            sk.attackMode === 'mapLine' ? field('直线长度', numInput(sk.lineLength, set('lineLength'), { min: 1, max: 100 }), '从自己向上下左右延伸；点击方向上的任一格') : self || tile ? null : field('范围半径', numInput(sk.radius, set('radius'), { min: sk.attackMode === 'mapArea' ? 1 : 0 }), '按格子距离计算菱形范围；普通技能0＝单体'),
             field('冷却回合', numInput(sk.cooldown, set('cooldown'), { min: 0 }), '每 N 回合可用一次；0 或 1＝每回合可用'),
             field('次数', numInput(sk.uses, set('uses'), { min: 0 }), '每场战斗；0＝无限'),
         ),
@@ -273,7 +278,7 @@ function skillForm(app, u, sk) {
                 sk.effects.push({ type, value: EFFECTS[type].value, turns: EFFECTS[type].instant ? 0 : 2 });
                 app.save(); app.render();
             }, { icon: 'fa-plus' }),
-            support && !sk.effects.length ? h('small.tsrpg-warn', '辅助技能至少需要一个效果') : null,
+            support && !tile && !sk.effects.length ? h('small.tsrpg-warn', '辅助技能至少需要一个效果') : null,
         ),
         h('div.tsrpg-row',
             textInput(sk.desc, set('desc'), '技能描述（会告诉 LLM，用于描写）'),
@@ -371,7 +376,7 @@ function terrainForm(app, t) {
             field('颜色', h('input', { type: 'color', value: t.color, onchange: e => set('color', true)(e.target.value) })),
         ),
         h('div.tsrpg-grid4',
-            field('移动消耗', numInput(t.moveCost, set('moveCost'), { min: 1 }), '进入此格消耗的移动力'),
+            field('移动消耗', numInput(t.moveCost, set('moveCost'), { min: 0.1, step: 0.1 }), '进入此格消耗的移动力；可以是小数，0.5＝在此地形上移动距离翻倍'),
             field('减伤 %', numInput(t.defBonus, set('defBonus'), { min: -100, max: 100 }), '站在此格时受到伤害的减免（可为负）'),
             field('闪避加成 %', numInput(t.avoid ?? 0, set('avoid'), { min: -100, max: 100 }), '站在此格时，敌人对它的命中率降低（可为负）'),
             field('回合回复 %', numInput(t.healPct, set('healPct'), { min: 0, max: 100 }), '回合开始时恢复最大 HP 的比例'),

@@ -120,7 +120,7 @@ export function applyCommand(b, c, opt) {
             const type = findEffect(a[1]);
             if (!type) throw new Error(`未知的效果「${a[1] || ''}」，只能使用预设效果`);
             const def = EFFECTS[type];
-            if (def.instant && type !== 'cleanse') throw new Error(`「${def.name}」是立即效果，请用 heal 指令`);
+            if (def.instant && type !== 'cleanse') throw new Error(type.startsWith('heal') ? `「${def.name}」是立即效果，请用 heal 指令` : `「${def.name}」只能通过技能使用`);
             let i = 2;
             if (type === 'cleanse') {
                 const removed = (u.statuses || []).filter(s => EFFECTS[s.type]?.debuff);
