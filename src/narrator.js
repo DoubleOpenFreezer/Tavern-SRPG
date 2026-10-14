@@ -86,6 +86,7 @@ function formatEventBody(e) {
             let lead = '';
             if (e.reaction === 'defend') lead = `${who(e.target)}选择防御，放弃反击并减轻伤害。`;
             if (e.exhausted) lead = `${who(e.target)}韧性耗尽，无法防御或反击，只能硬接这一击。`;
+            if (e.endured) lead = `${who(e.target)}没有防御或反击，选择硬接这一击（保留韧性）。`;
             if (e.firstStrike) {
                 const f = e.firstStrike;
                 lead = `${who(e.actor)} 使用后手武器，${who(e.target)}先攻${f.hit === false ? '但未命中' : `造成 ${f.damage} 点伤害（${e.actor.name} ${hpChange(f)}）`}。`;
@@ -110,6 +111,7 @@ function formatEventBody(e) {
                 if (r.missed) return `${who(r.target)} 闪避了（未命中）${counter}`;
                 const bits = [];
                 if (r.exhausted) bits.push('韧性耗尽，无法防御');
+                if (r.endured) bits.push('选择硬接（保留韧性）');
                 if (r.reaction === 'defend') bits.push('选择防御');
                 if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);

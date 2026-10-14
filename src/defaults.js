@@ -193,6 +193,7 @@ export function defaultRules() {
         hitEnabled: true, // 命中判定
         baseHit: 90, // 基础命中率 %
         agiFactor: 3, // 每 1 点敏捷差影响的命中率 %
+        toughness: 'all', // 韧性系统：all 所有单位 ; player 仅我方角色 ; off 关闭（不受约束的 AI 单位只反击、不防御）
     };
 }
 

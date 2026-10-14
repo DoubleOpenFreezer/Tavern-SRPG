@@ -345,7 +345,7 @@ export class App {
         const b = ST.getBattle();
         if (!b?.active || b.paused) return '';
         const { inject: inj, llm } = this.settings;
-        const opts = { ...inj, sections, commands: llm.commands };
+        const opts = { ...inj, sections, commands: llm.commands, rules: this.data.rules };
         if (sections) Object.assign(opts, { map: true, legend: true, stats: true, skills: true, nearest: true });
         let text = buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {});
         // 开启剧情指令时，告诉 LLM 怎样写指令

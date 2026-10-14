@@ -368,7 +368,7 @@ function onHover(app, b, x, y, refs) {
     refs.preview.textContent = preview || '';
     clear(refs.hoverInfo);
     const show = at && at !== u ? at : null;
-    if (show) refs.hoverInfo.append(unitCard(b, show, true));
+    if (show) refs.hoverInfo.append(unitCard(b, show, true, app.data.rules));
     else {
         const t = E.terrainAt(b, x, y);
         refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''} ${t.desc || ''}`));
@@ -380,7 +380,7 @@ function onHover(app, b, x, y, refs) {
     }
 }
 
-function unitCard(b, u, compact = false) {
+function unitCard(b, u, compact = false, rules = null) {
     const t = E.terrainAt(b, u.x, u.y);
     const pct = Math.round((u.hp / u.maxHp) * 100);
     return h(`div.tsrpg-card.side-${u.side}`,
@@ -393,7 +393,7 @@ function unitCard(b, u, compact = false) {
             E.taunters(b, u).length ? h('span.tsrpg-tag.dead', `被嘲讽：只能攻击${E.taunters(b, u).map(t => t.name).join('、')}`) : null,
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),
         h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), h('span', `HP ${u.hp}/${u.maxHp}`)),
-        statGrid(u),
+        statGrid(u, rules),
         (u.traits || []).length ? h('div.tsrpg-statuses', u.traits.map(t =>
             h('span.tsrpg-chip', { title: `${t.desc || ''}\n${E.traitSummary(t)}` }, `特质：${t.name}`))) : null,
         (u.statuses || []).length ? h('div.tsrpg-statuses', u.statuses.map(st => {
@@ -409,7 +409,7 @@ function unitCard(b, u, compact = false) {
     );
 }
 
-function statGrid(u) {
+function statGrid(u, rules) {
     // 受增益 / 减益影响的属性显示为绿色 / 红色
     const cell = (label, key) => {
         const base = u[key], now = E.stat(u, key);
@@ -419,8 +419,8 @@ function statGrid(u) {
     return h('div.tsrpg-stats',
         cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('AGI', 'agi'), cell('MOV', 'mov'),
         h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))),
-        h('div', { title: '每次防御或反击消耗1点，耗尽后只能承受伤害；己方阶段开始时回满' }, h('small', '韧性'),
-            h(`b${E.canBrace(u) ? '' : '.down'}`, `${E.toughLeft(u)}/${E.toughMax(u)}`)));
+        E.toughApplies(u, rules) ? h('div', { title: '每次防御或反击消耗1点，耗尽后只能承受伤害；己方阶段开始时回满' }, h('small', '韧性'),
+            h(`b${E.canBrace(u, rules) ? '' : '.down'}`, `${E.toughLeft(u)}/${E.toughMax(u)}`)) : null);
 }
 
 function actionPanel(app, b, u) {
@@ -520,7 +520,7 @@ function renderActive(app, root, b) {
                 quietTurnButton(app, b), pauseButton(app, b)),
             h('div.tsrpg-board-wrap', refs.board),
             processStatus(app),
-            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${u.object ? '' : ` · 韧性 ${E.toughLeft(u)}/${E.toughMax(u)}`}${u.acted ? ' · 已行动' : ''}`) : null,
+            u ? h('div.tsrpg-muted', `${u.name} · HP ${u.hp}/${u.maxHp}${E.toughApplies(u, app.data.rules) ? ` · 韧性 ${E.toughLeft(u)}/${E.toughMax(u)}` : ''}${u.acted ? ' · 已行动' : ''}`) : null,
             ui.busy ? null : ui.cheat ? manualPanel(app, b) : ui.engagement ? engagementPanel(app, b) : actionPanel(app, b, u),
             refs.preview,
             h('div.tsrpg-row',
@@ -568,7 +568,7 @@ function renderActive(app, root, b) {
             h('div.tsrpg-side',
                 processStatus(app),
                 ui.busy ? null : proposalPanel(app, b),
-                u ? unitCard(b, u) : h('div.tsrpg-muted', '点击我方单位选择，右键取消。红色区域为可攻击范围。'),
+                u ? unitCard(b, u, false, app.data.rules) : h('div.tsrpg-muted', '点击我方单位选择，右键取消。红色区域为可攻击范围。'),
                 ui.busy ? null : ui.cheat ? manualPanel(app, b) : ui.engagement ? engagementPanel(app, b) : actionPanel(app, b, u),
                 refs.preview,
                 refs.hoverInfo,
@@ -592,9 +592,9 @@ const approx = value => Number(value.toFixed(1));
 function previewCard(b, actor, target, rules, skill, reaction, defendingView = false) {
     const p = exchangePreview(b, actor, target, rules, skill, reaction);
     return h('div.tsrpg-exchange-card',
-        h('b', `${target.name} · HP ${target.hp}/${target.maxHp}${target.object ? '' : ` · 韧性 ${E.toughLeft(target)}/${E.toughMax(target)}`}`),
+        h('b', `${target.name} · HP ${target.hp}/${target.maxHp}${E.toughApplies(target, rules) ? ` · 韧性 ${E.toughLeft(target)}/${E.toughMax(target)}` : ''}`),
         h('div', `${defendingView ? '预计承受：' : ''}命中伤害 ${p.damage} · 命中率 ${p.hit}% · 期望伤害 ≈${approx(p.expectedDamage)}`),
-        h('div.tsrpg-muted', p.responds ? `${p.firstStrike ? `${defendingView ? '我方' : '对方'}先攻` : `${defendingView ? '我方' : ''}存活后反击`}：伤害 ${p.counter} · 命中率 ${p.counterHit}% · 期望 ≈${approx(p.expectedCounter)}` : reaction === 'defend' ? `${defendingView ? '我方' : '对方'}防御：伤害已计入减伤，不反击` : !target.object && E.isFoe(actor, target) && !E.canBrace(target) ? `${defendingView ? '我方' : '对方'}韧性耗尽：无法防御或反击，承受全额伤害` : '没有反击'),
+        h('div.tsrpg-muted', p.responds ? `${p.firstStrike ? `${defendingView ? '我方' : '对方'}先攻` : `${defendingView ? '我方' : ''}存活后反击`}：伤害 ${p.counter} · 命中率 ${p.counterHit}% · 期望 ≈${approx(p.expectedCounter)}` : reaction === 'defend' ? `${defendingView ? '我方' : '对方'}防御：伤害已计入减伤，不反击` : !target.object && E.isFoe(actor, target) && !E.canBrace(target, rules) ? `${defendingView ? '我方' : '对方'}韧性耗尽：无法防御或反击，承受全额伤害` : defendingView && reaction === 'none' ? `承受：全额伤害，不反击${E.toughApplies(target, rules) ? '，不消耗韧性' : ''}` : '没有反击'),
         p.firstStrike && p.counter >= actor.hp ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
 }
 
@@ -676,21 +676,23 @@ function askReaction(app, b, request) {
             ui.busy = '回合结算中……';
             resolve(value);
         };
-        // 韧性耗尽时只能承受，仍可选择生成描写
-        const braced = E.canBrace(target);
-        const main = braced ? 'defend' : 'none';
-        const defend = button(braced ? '防御' : '承受', () => settle(main), { icon: braced ? 'fa-shield' : 'fa-heart-crack', cls: 'primary' });
+        // 有韧性时可以防御 / 反击，也可以主动承受以保留韧性；韧性耗尽时只能承受。都可以选择生成描写
+        const braced = E.canBrace(target, app.data.rules);
+        const tough = E.toughApplies(target, app.data.rules);
         const responds = E.canRespond(b, attacker, target, app.data.rules, skill);
-        const counter = responds ? button('反击', () => settle('counter'), { icon: 'fa-khanda' }) : null;
         const generate = reaction => {
             if (ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
             settle({ reaction, narrate: true });
         };
-        const defendNarrate = button(braced ? '防御并生成描写' : '承受并生成描写', () => generate(main), { icon: 'fa-comment' });
+        const defend = braced ? button('防御', () => settle('defend'), { icon: 'fa-shield', cls: 'primary' }) : null;
+        const counter = responds ? button('反击', () => settle('counter'), { icon: 'fa-khanda' }) : null;
+        const endure = button('承受', () => settle('none'), { icon: 'fa-heart-crack', cls: braced ? '' : 'primary', title: braced && tough ? '不防御也不反击，承受全额伤害，保留韧性' : '' });
+        const defendNarrate = braced ? button('防御并生成描写', () => generate('defend'), { icon: 'fa-comment' }) : null;
         const counterNarrate = responds ? button('反击并生成描写', () => generate('counter'), { icon: 'fa-comment' }) : null;
+        const endureNarrate = button('承受并生成描写', () => generate('none'), { icon: 'fa-comment' });
         const cancel = button('取消本次回合', () => settle(null));
-        const choices = [defend, counter, defendNarrate, counterNarrate, cancel].filter(Boolean);
-        ui.busy = `等待${target.name}选择${!braced ? '承受' : responds ? '反击或防御' : '防御'}`;
+        const choices = [defend, counter, endure, defendNarrate, counterNarrate, endureNarrate, cancel].filter(Boolean);
+        ui.busy = `等待${target.name}选择${!braced ? '承受' : responds ? '反击、防御或承受' : '防御或承受'}`;
         const overlay = h('div.tsrpg-overlay', { onkeydown: e => {
             if (e.key === 'Escape') { e.preventDefault(); settle(null); }
             if (e.key === 'Tab') {
@@ -698,22 +700,24 @@ function askReaction(app, b, request) {
                 const index = choices.indexOf(document.activeElement);
                 choices[(index + (e.shiftKey ? -1 : 1) + choices.length) % choices.length].focus();
             }
-        } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': braced ? '选择反击或防御' : '承受攻击' },
+        } }, h('div.tsrpg-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': braced ? '选择反击、防御或承受' : '承受攻击' },
             h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${target.name}`),
             !braced ? [
                 h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`),
                 previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
             ] : [
-                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制），只能防御。'),
+                responds ? previewCard(b, attacker, target, app.data.rules, skill, 'counter', true) : h('div.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。'),
                 h('b', '选择防御时'), previewCard(b, attacker, target, app.data.rules, skill, 'defend', true),
-                h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）。`),
+                h('b', '选择承受时'), previewCard(b, attacker, target, app.data.rules, skill, 'none', true),
+                h('small.tsrpg-muted', `防御降低本次伤害并放弃反击；反击需要在受到攻击后存活（后手武器按先攻顺序处理）。${tough ? `防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}）；承受不消耗韧性，留给更危险的攻击。` : ''}`),
             ],
             h('small.tsrpg-muted', '生成描写：本回合结算完成后发送，选择生成的交战会详细描写，自上次发送以来的其他行动作为背景信息一并带过。'),
-            h('div.tsrpg-row', defend, counter, defendNarrate, counterNarrate, cancel),
+            h('div.tsrpg-row', defend, counter, endure),
+            h('div.tsrpg-row', defendNarrate, counterNarrate, endureNarrate, cancel),
         ));
         ui.cancelReaction = () => settle(null);
         app.panel.classList.add('tsrpg-reaction-open');
-        app.render(); app.panel.append(overlay); defend.focus();
+        app.render(); app.panel.append(overlay); (defend || endure).focus();
     });
 }
 

@@ -104,3 +104,64 @@ test('旧资料卡与旧战斗补上默认韧性；手动修改可调整韧性�
     applyManualChange(b, { type: 'stat', uid: k.uid, key: 'toughMax', value: 1 }, p);
     assert.equal(E.toughLeft(k), 1);
 });
+
+test('技能：明确选择承受不消耗韧性并标记，未提供反应时不算主动承受', () => {
+    const shot = makeSkill({ id: 'shot', rangeMin: 1, rangeMax: 3, power: 100 });
+    const b = battle([archer({ skills: [shot] }), orc({ id: 'o1' }), orc({ id: 'o2' })], [[0, 2], [1, 2], [2, 2]]);
+    const [ar, o1, o2] = b.units;
+    const ev = E.doSkill(b, ar, ar.skills[0], 1, 2, rules, fixed, { [o1.uid]: 'none' });
+    assert.equal(ev.results[0].endured, true);
+    assert.equal(E.toughLeft(o1), 2);
+    assert.match(formatEvent(ev), /选择硬接（保留韧性）/);
+    ar.acted = false; ar.skills[0].cdLeft = 0;
+    const ev2 = E.doSkill(b, ar, ar.skills[0], 2, 2, rules, fixed);
+    assert.equal(ev2.results[0].endured, undefined);
+    assert.equal(E.toughLeft(o2), 2);
+});
+
+test('韧性仅我方角色：敌人不受韧性约束，能反击就反击、打不到就硬吃，不会防御；我方照常消耗', () => {
+    const r = { ...rules, toughness: 'player' };
+    const b = battle([archer(), knight(), orc({ tough: 1 })], [[0, 2], [2, 1], [2, 2]]);
+    const [ar, kn, o] = b.units;
+    assert.equal(E.toughApplies(o, r), false);
+    assert.equal(E.defaultReaction(b, ar, o, r), 'none', '近战敌人打不到弓手，也不防御');
+    const shot = E.doAttack(b, ar, o, r, fixed, E.defaultReaction(b, ar, o, r));
+    assert.equal(shot.reaction, 'none');
+    assert.equal(shot.endured, undefined);
+    assert.equal(shot.exhausted, undefined);
+    assert.doesNotMatch(formatEvent(shot), /韧性|防御|硬接/);
+    for (let i = 0; i < 3; i++) {
+        kn.acted = false;
+        const hit = E.doAttack(b, kn, o, r, fixed, E.defaultReaction(b, kn, o, r));
+        assert.ok(hit.counter, `第${i + 1}次仍然反击`);
+    }
+    assert.equal(E.toughLeft(o), 1, '敌人的韧性不消耗');
+    assert.doesNotMatch(buildBattleContext(b, { ...defaultSettings().inject, rules: r }), /兽人[^\n]*韧性/);
+    assert.match(buildBattleContext(b, { ...defaultSettings().inject, rules: r }), /骑士[^\n]*韧性/);
+
+    // 我方仍受韧性约束
+    o.ai = 'stationary';
+    kn.tough = 0;
+    assert.equal(E.defaultReaction(b, o, kn, r), 'none');
+    assert.equal(E.canBrace(kn, r), false);
+});
+
+test('关闭韧性：我方可以不限次数防御，敌方只反击不防御', () => {
+    const r = { ...rules, toughness: 'off' };
+    const b = battle([knight({ tough: 1 }), orc({ rangeMin: 2, rangeMax: 2 })], [[0, 0], [2, 0]]);
+    const [kn, o] = b.units;
+    for (let i = 0; i < 3; i++) {
+        o.acted = false;
+        const ev = E.doAttack(b, o, kn, r, fixed, 'defend');
+        assert.equal(ev.reaction, 'defend', `第${i + 1}次仍可防御`);
+        assert.equal(ev.tough, undefined);
+    }
+    assert.equal(E.toughLeft(kn), 1);
+    assert.equal(E.defaultReaction(b, o, kn, r), 'defend', '我方自动反应仍会防御');
+    assert.equal(E.defaultReaction(b, kn, o, r), 'counter', '敌方能反击时反击');
+    kn.x = 1;
+    assert.equal(E.defaultReaction(b, kn, o, r), 'none', '敌方贴身打不到时不防御');
+    kn.x = 0;
+    const ev = E.doAttack(b, o, kn, r, fixed, 'none');
+    assert.equal(ev.endured, undefined, '关闭韧性时承受不标注保留韧性');
+});

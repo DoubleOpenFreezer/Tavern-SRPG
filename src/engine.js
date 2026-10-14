@@ -394,9 +394,19 @@ export function toughLeft(u) {
     return Math.min(toughMax(u), Number.isFinite(n) ? Math.max(0, Math.floor(n)) : toughMax(u));
 }
 
-/** 是否还能防御或反击 */
-export function canBrace(u) {
-    return !u.object && toughLeft(u) > 0;
+export const TOUGH_MODES = { all: '所有单位', player: '仅我方角色', off: '关闭' };
+
+/** 韧性系统是否作用于该单位：rules.toughness = all（默认）/ player（仅我方）/ off */
+export function toughApplies(u, rules) {
+    if (u.object) return false;
+    const mode = rules?.toughness || 'all';
+    return mode === 'all' || (mode === 'player' && u.side === 'player');
+}
+
+/** 是否还能防御或反击（不受韧性系统约束的单位不限次数） */
+export function canBrace(u, rules) {
+    if (u.object) return false;
+    return !toughApplies(u, rules) || toughLeft(u) > 0;
 }
 
 // ---------------------------------------------------------------- 行动
@@ -449,14 +459,16 @@ export function defenseDamage(damage, rules) {
 }
 
 export function canRespond(b, attacker, defender, rules, skill = null) {
-    if (!isFoe(attacker, defender) || !canBrace(defender) || !canCounter(b, defender, attacker)) return false;
+    if (!isFoe(attacker, defender) || !canBrace(defender, rules) || !canCounter(b, defender, attacker)) return false;
     if (skill && (skill.kind === 'support' || ['mapLine', 'mapArea'].includes(skill.attackMode))) return false;
     return !!rules.counter || (!skill && attacker.attackOrder === 'last' && defender.attackOrder !== 'last');
 }
 
 export function defaultReaction(b, attacker, defender, rules, skill = null) {
-    if (defender.object || !isFoe(attacker, defender) || !canBrace(defender)) return 'none';
-    return canRespond(b, attacker, defender, rules, skill) ? 'counter' : 'defend';
+    if (defender.object || !isFoe(attacker, defender) || !canBrace(defender, rules)) return 'none';
+    if (canRespond(b, attacker, defender, rules, skill)) return 'counter';
+    // 不受韧性系统约束的 AI 单位只在能反击时反击，不会防御
+    return toughApplies(defender, rules) || defender.side === 'player' ? 'defend' : 'none';
 }
 
 /**
@@ -465,9 +477,11 @@ export function defaultReaction(b, attacker, defender, rules, skill = null) {
  */
 function useReaction(b, attacker, defender, rules, reaction, skill = null) {
     if (defender.object || !isFoe(attacker, defender)) return { reaction: 'none' };
-    if (!canBrace(defender)) return { reaction: 'none', exhausted: true };
+    if (!canBrace(defender, rules)) return { reaction: 'none', exhausted: true };
+    if (reaction === 'none') return toughApplies(defender, rules) ? { reaction: 'none', endured: true } : { reaction: 'none' }; // 主动承受：不防御不反击，保留韧性
     if (!['counter', 'defend'].includes(reaction)) return { reaction: 'none' };
     if (reaction === 'counter' && !canRespond(b, attacker, defender, rules, skill)) return { reaction: 'none' };
+    if (!toughApplies(defender, rules)) return { reaction };
     const before = toughLeft(defender);
     defender.tough = before - 1;
     return { reaction, tough: [before, defender.tough] };
@@ -518,6 +532,7 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
         cancelled: !!first && unit.hp <= 0,
         reaction,
         ...(used.exhausted ? { exhausted: true } : {}),
+        ...(used.endured ? { endured: true } : {}),
         ...(used.tough ? { tough: used.tough } : {}),
     };
     if (reaction === 'counter' && !first && rules.counter && canCounter(b, target, unit)) {
@@ -658,10 +673,12 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     const affected = skillAffected(b, unit, skill, tx, ty);
     if (!affected.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport) throw new Error('该位置没有可作用的目标');
     // 受击反应先于命中判定确定，未命中也已消耗韧性
-    const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'none', skill)]));
+    // 未提供反应视为无反应；明确传入 'none' 才算主动承受
+    const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'unset', skill)]));
     const results = affected.map(t => {
         const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
         if (used[t.uid].exhausted) r.exhausted = true;
+        if (used[t.uid].endured) r.endured = true;
         if (used[t.uid].tough) r.tough = used[t.uid].tough;
         const chance = skillHitChance(b, unit, skill, t, rules);
         if (!rollHit(chance, rng)) {

@@ -18,7 +18,7 @@ export function describePlan(b, unit, plan, rules, labels = unitLabels(b)) {
                 const t = getUnit(b, plan.target.uid);
                 const preview = exchangePreview(b, unit, t, rules);
                 const dmg = preview.damage;
-                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}${canBrace(t) ? '' : '，目标韧性耗尽无法招架'}${preview.firstStrike ? `；目标先攻，若受到约${preview.counter}点伤害后存活才出手` : ''}）`;
+                return `${go}普通攻击 ${name(t)}（命中 ${hitChance(b, unit, t, rules)}%，伤害约 ${dmg}${dmg >= t.hp ? '，可击败' : ''}${canBrace(t, rules) ? '' : '，目标韧性耗尽无法招架'}${preview.firstStrike ? `；目标先攻，若受到约${preview.counter}点伤害后存活才出手` : ''}）`;
             }
             case 'skill': {
                 const sk = plan.skill;
