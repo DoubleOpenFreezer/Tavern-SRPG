@@ -1,7 +1,7 @@
 // 用户手动调整战场：只改当前战斗，不改资料卡；所有参数先校验再写入。
-import { getUnit, unitAt, inBounds, enterCost, makeBattleUnit, commit, SIDE_NAMES, toughMax, toughLeft } from './engine.js';
+import { getUnit, unitAt, inBounds, enterCost, makeBattleUnit, commit, SIDE_NAMES, toughMax, toughLeft, initFog, stat } from './engine.js';
 
-const NUMERIC = new Set(['hp', 'maxHp', 'atk', 'matk', 'def', 'mdef', 'agi', 'mov', 'rangeMin', 'rangeMax', 'tough', 'toughMax']);
+const NUMERIC = new Set(['hp', 'maxHp', 'atk', 'matk', 'def', 'mdef', 'agi', 'mov', 'rangeMin', 'rangeMax', 'tough', 'toughMax', 'vision']);
 function position(b, x, y, unit) {
     if (!Number.isInteger(x) || !Number.isInteger(y) || !inBounds(b, x, y)) throw new Error('坐标超出地图范围');
     const occupant = unitAt(b, x, y);
@@ -50,17 +50,20 @@ export function applyManualChange(b, change, data) {
                 if (!Object.hasOwn(SIDE_NAMES, value)) throw new Error('无效阵营');
             } else if (key === 'attackOrder') {
                 if (!['normal', 'last'].includes(value)) throw new Error('无效攻击顺序');
-            } else if (['flying', 'acted', 'keyTarget'].includes(key)) {
+            } else if (['flying', 'antiAir', 'acted', 'keyTarget'].includes(key)) {
                 if (typeof value !== 'boolean') throw new Error('无效开关值');
+            } else if (key === 'typeId') {
+                if (value && !b.unitTypes?.[value]) throw new Error('无效兵种');
             } else throw new Error('不支持修改此属性');
-            const before = key === 'tough' ? toughLeft(u) : key === 'toughMax' ? toughMax(u) : u[key];
+            const before = key === 'tough' ? toughLeft(u) : key === 'toughMax' ? toughMax(u) : key === 'vision' ? stat({ ...u, statuses: [], traits: [] }, 'vision')
+                : key === 'typeId' ? b.unitTypes?.[u.typeId]?.name || '无兵种' : u[key];
             if (key === 'toughMax') u.tough = Math.min(toughLeft(u), value);
             u[key] = value;
             if (key === 'maxHp') u.hp = Math.min(u.hp, value);
             if (key === 'hp' && value > 0) u.retreated = false;
             if (key === 'rangeMin') u.rangeMax = Math.max(u.rangeMax, value);
             if (key === 'rangeMax') u.rangeMin = Math.min(u.rangeMin, value);
-            text = `${u.name}的${key}：${before} → ${value}。`;
+            text = key === 'typeId' ? `${u.name}的兵种：${before} → ${b.unitTypes?.[value]?.name || '无兵种'}。` : `${u.name}的${key}：${before} → ${value}。`;
             break;
         }
         case 'restore':
@@ -76,6 +79,13 @@ export function applyManualChange(b, change, data) {
             b.terrains[terrain.id] = structuredClone(terrain);
             b.tiles[change.y * b.w + change.x] = terrain.id;
             text = `(${change.x + 1},${change.y + 1})改为${terrain.name}。`;
+            break;
+        }
+        case 'fog': {
+            const was = !!b.fog?.enabled;
+            b.fog = { enabled: !!change.enabled, ai: change.ai !== false };
+            if (b.fog.enabled && !was) initFog(b);
+            text = b.fog.enabled ? `战争迷雾${was ? '设置调整' : '开启'}：${b.fog.ai ? '敌我双方都只能看到视野内的单位' : '我方只能看到视野内的敌人，敌方掌握全部情报'}。` : '战争迷雾关闭，战场一览无余。';
             break;
         }
         case 'defeatEnemies':

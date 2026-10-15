@@ -56,7 +56,7 @@ function renderPaused(app, root, b) {
     add(root, h('div.tsrpg-mission', `战斗已暂停：${b.mapName} · 第 ${b.turn} 回合 · ${PHASE[b.phase] || b.phase}`),
         h('div.tsrpg-muted', '棋盘、HP、技能冷却及待发送行动已保留。暂停期间不注入战场信息、不处理剧情指令；关闭窗口或刷新后仍可继续。'),
         h('div.tsrpg-row', button('继续战斗', () => setBattlePaused(app, b, false), { icon: 'fa-play', cls: 'primary' })),
-        h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b) })));
+        h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b).filter(u => E.visibleTo(b, 'P', u)), marks: fogMarks(b) })));
 }
 
 // ---------------------------------------------------------------- 开战准备
@@ -73,13 +73,15 @@ function renderSetup(app, root) {
     const terr = id => app.data.terrains.find(t => t.id === id) || { name: id, color: '#999' };
     const unitDefs = new Map(app.data.units.map(u => [u.id, u]));
     const placed = map.placements.filter(p => unitDefs.has(p.unitId));
-    const units = placed.map(p => ({ ...unitDefs.get(p.unitId), x: p.x, y: p.y }));
-    const counts = side => units.filter(u => u.side === side && u.kind !== 'object').length;
+    const all = placed.map(p => ({ ...unitDefs.get(p.unitId), x: p.x, y: p.y }));
+    const counts = side => all.filter(u => u.side === side && u.kind !== 'object').length;
     const problems = E.validateMission(map, app.data.units);
     // 用一个临时战场生成任务说明与增援预告
-    const preview = E.createBattle(map, app.data.units, app.data.terrains);
-    const marks = new Map();
-    for (const w of map.reinforcements || []) marks.set(`${w.x},${w.y}`, ['m-spawn']);
+    const preview = E.createBattle(map, app.data.units, app.data.terrains, app.data.unitTypes);
+    // 战争迷雾：开战前只显示我方视野内的敌人
+    const units = preview.fog.enabled ? preview.units.filter(u => E.visibleTo(preview, 'P', u)) : all;
+    const marks = fogMarks(preview);
+    for (const w of map.reinforcements || []) (marks.get(`${w.x},${w.y}`) || marks.set(`${w.x},${w.y}`, []).get(`${w.x},${w.y}`)).push('m-spawn');
 
     if (s.ui.layout === 'compact') {
         add(root,
@@ -101,9 +103,10 @@ function renderSetup(app, root) {
             button('开始战斗', () => startBattle(app, map), { icon: 'fa-flag', cls: 'primary', disabled: problems.length > 0 }),
         ),
         h('div.tsrpg-mission', h('i.fa-solid.fa-bullseye'), ' ', missionText(preview)),
+        preview.fog.enabled ? h('div.tsrpg-muted', h('i.fa-solid.fa-smog'), ` 战争迷雾：只能看到我方视野内的敌人${preview.fog.ai ? '，敌人同样只知道看得见的我方单位' : '，敌人知道我方所有单位的位置'}。`) : null,
         upcomingWaves(preview) ? h('div.tsrpg-muted', h('i.fa-solid.fa-people-group'), ` 增援：${upcomingWaves(preview)}`) : null,
         map.desc ? h('div.tsrpg-desc', map.desc) : null,
-        h('div.tsrpg-row.tsrpg-muted', `我方 ${counts('player')} · 友军 ${counts('ally')} · 敌方 ${counts('enemy')}`),
+        h('div.tsrpg-row.tsrpg-muted', `我方 ${counts('player')} · 友军 ${counts('ally')} · 敌方 ${preview.fog.enabled ? '?' : counts('enemy')}`),
         problems.map(p => h('div.tsrpg-warn', h('i.fa-solid.fa-triangle-exclamation'), ` ${p}`)),
         h('div.tsrpg-board-wrap', renderBoard({ w: map.w, h: map.h, tiles: map.tiles, terrain: terr, units, marks, cell: Math.min(app.cellFor(map.w), 32) })),
     );
@@ -114,7 +117,8 @@ function startBattle(app, map) {
     const s = app.settings;
     const problems = E.validateMission(map, app.data.units);
     if (problems.length) return toast('warning', problems.join('；'));
-    const b = E.createBattle(map, app.data.units, app.data.terrains);
+    const b = E.createBattle(map, app.data.units, app.data.terrains, app.data.unitTypes);
+    b.airRule = app.data.rules.airTarget === 'antiAir';
     b.profileId = app.data.id;
     b.profileName = app.data.name;
     b.pending.push({ type: 'mission', turn: 1, text: missionText(b) });
@@ -137,8 +141,44 @@ function canControl(b, u) {
     return u && u.hp > 0 && u.side === 'player' && !u.object && !E.isStunned(u) && !u.acted && b.phase === 'player' && !b.result;
 }
 
+/** 玩家是否按战争迷雾看棋盘（手动修改时显示全部） */
+function fogView(b, ui) {
+    return E.fogOn(b, 'P') && !ui?.cheat;
+}
+
+/** 玩家眼中 (x,y) 上的单位 */
+function seenAt(b, ui, x, y) {
+    return fogView(b, ui) ? E.visibleUnitAt(b, 'P', x, y) : E.unitAt(b, x, y);
+}
+
+/** 迷雾中的格子（我方视野之外）变暗 */
+function fogMarks(b, ui = null, marks = new Map()) {
+    if (!fogView(b, ui)) return marks;
+    const seen = E.visibleTiles(b, 'P');
+    for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) {
+        if (seen.has(`${x},${y}`)) continue;
+        if (!marks.has(`${x},${y}`)) marks.set(`${x},${y}`, []);
+        marks.get(`${x},${y}`).push('m-fog');
+    }
+    return marks;
+}
+
+/** 最后发现敌人的位置：半透明的「?」棋子 */
+function ghostTokens(b, ui, shown) {
+    if (!fogView(b, ui)) return [];
+    const taken = new Set(shown.map(u => `${u.x},${u.y}`));
+    return E.lastSeen(b, 'P').filter(g => !taken.has(`${g.x},${g.y}`)).map(g => ({
+        uid: `ghost:${g.unit.uid}`, ghost: true, side: g.unit.side, icon: '?', color: g.unit.color, x: g.x, y: g.y,
+        name: `${g.unit.name}（第 ${g.turn} 回合最后发现于此）`, maxHp: 0,
+    }));
+}
+
+function visibleFoeIds(b) {
+    return new Set(E.alive(b).filter(u => E.team(u) === 'E' && E.visibleTo(b, 'P', u)).map(u => u.uid));
+}
+
 function computeMarks(b, ui) {
-    const marks = new Map();
+    const marks = fogMarks(b, ui);
     const add = (x, y, cls) => {
         const k = `${x},${y}`;
         if (!marks.has(k)) marks.set(k, []);
@@ -154,7 +194,7 @@ function computeMarks(b, ui) {
     add(u.x, u.y, 'm-sel');
 
     if (ui.mode === 'move' || ui.mode === 'inspect') {
-        const reach = E.reachable(b, u);
+        const reach = E.reachable(b, u, undefined, false, ui.mode === 'move' && fogView(b, ui));
         const reachCls = ui.mode === 'move' ? 'm-reach' : 'm-reach-foe';
         const threat = new Set();
         for (const n of reach.values()) {
@@ -260,7 +300,7 @@ function onCell(app, b, x, y) {
     const ui = app.bs;
     if (ui.busy || b.paused || ST.getBattle() !== b) return;
     const u = selUnit(b, ui);
-    const at = E.unitAt(b, x, y);
+    const at = seenAt(b, ui, x, y);
     const key = `${x},${y}`;
 
     if (ui.cheat) {
@@ -273,11 +313,19 @@ function onCell(app, b, x, y) {
     }
 
     if (ui.mode === 'move' && u) {
-        const reach = E.reachable(b, u);
+        const fog = fogView(b, ui);
+        const reach = E.reachable(b, u, undefined, false, fog);
         if (reach.has(key)) {
             pushUndo(app, b);
-            const ev = E.doMove(b, u, x, y);
+            const snapshot = ui.undo.at(-1);
+            const seenBefore = fog ? visibleFoeIds(b) : null;
+            const ev = E.doMove(b, u, x, y, { fogView: fog });
             if (ev) b.pending.push(ev);
+            // 迷雾中发现了新的敌人（或遭遇伏击）后不能撤销，避免用撤销侦察
+            if (fog && (ev?.ambush || [...visibleFoeIds(b)].some(id => !seenBefore.has(id)))) {
+                ui.undo = [];
+                toast(ev?.ambush ? 'warning' : 'info', ev?.ambush ? `遭遇伏击！${ev.ambush.name}埋伏在迷雾中，${u.name}被迫停下。` : '发现了迷雾中的敌人，本次移动无法撤销。');
+            }
             const results = E.commit(b, null);
             b.pending.push(...results);
             ui.mode = u.hp > 0 && !b.result ? 'action' : 'idle';
@@ -285,7 +333,7 @@ function onCell(app, b, x, y) {
             ST.saveBattle();
             app.updateInjection();
             app.render();
-            if (app.settings.ui.animate !== false) return playBattleEvents(app, b, ui.undo.at(-1), [ev, ...results].filter(Boolean));
+            if (app.settings.ui.animate !== false) return playBattleEvents(app, b, snapshot, [ev, ...results].filter(Boolean));
             return;
         }
     }
@@ -336,7 +384,7 @@ function onHover(app, b, x, y, refs) {
             for (const [ax, ay] of E.skillAreaTiles(b, u, sk, x, y)) {
                 refs.board.querySelector(`[data-x="${ax}"][data-y="${ay}"]`)?.classList.add('m-area');
             }
-            const aff = E.skillAffected(b, u, sk, x, y);
+            const aff = shownTargets(b, ui, E.skillAffected(b, u, sk, x, y));
             const rules = app.data.rules;
             const fx = sk.effects.filter(e => !['heal', 'heal_pct'].includes(e.type)).map(e => E.effectLabel(e));
             preview = aff.map(t => {
@@ -358,7 +406,7 @@ function onHover(app, b, x, y, refs) {
             if (E.skillTargetSide(sk) === 'tile') preview = `【${sk.name}】传送到 (${x + 1},${y + 1})${E.terrainAt(b, x, y).name}${fx.length ? `；附加 ${fx.join('、')}` : ''}`;
         }
     }
-    const at = E.unitAt(b, x, y);
+    const at = seenAt(b, ui, x, y);
     if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
         const p = exchangePreview(b, u, at, app.data.rules);
         const killed = p.damage >= at.hp;
@@ -370,7 +418,7 @@ function onHover(app, b, x, y, refs) {
     let hoverMap = null;
     if (u && ui.mode === 'skill') {
         const sk = u.skills.find(s => s.id === ui.skillId);
-        if (sk && sk.kind !== 'support' && E.skillTargetTiles(b, u, sk).some(([tx, ty]) => tx === x && ty === y)) hoverMap = forecastHp(b, u, sk, E.skillAffected(b, u, sk, x, y), app.data.rules);
+        if (sk && sk.kind !== 'support' && E.skillTargetTiles(b, u, sk).some(([tx, ty]) => tx === x && ty === y)) hoverMap = forecastHp(b, u, sk, shownTargets(b, ui, E.skillAffected(b, u, sk, x, y)), app.data.rules);
     } else if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
         hoverMap = forecastHp(b, u, null, [at], app.data.rules);
     }
@@ -384,7 +432,12 @@ function onHover(app, b, x, y, refs) {
     if (show) refs.hoverInfo.append(unitCard(b, show, true, app.data.rules));
     else {
         const t = E.terrainAt(b, x, y);
-        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''} ${t.desc || ''}`));
+        const fog = fogView(b, ui);
+        const sight = b.fog?.enabled ? `${Number(t.visionBonus) ? ` 视野${t.visionBonus > 0 ? '+' : ''}${t.visionBonus}` : ''}${Number(t.conceal) > 0 ? ` 隐蔽(${t.conceal}格内才能发现)` : ''}${E.blocksSight(t) ? ' 遮挡视线' : ''}` : '';
+        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''}${sight} ${t.desc || ''}`));
+        if (fog && !E.visibleTiles(b, 'P').has(`${x},${y}`)) refs.hoverInfo.append(h('div.tsrpg-muted', h('i.fa-solid.fa-smog'), ' 迷雾中：看不到这里有没有敌人'));
+        const ghost = fog && E.lastSeen(b, 'P').find(g => g.x === x && g.y === y);
+        if (ghost) refs.hoverInfo.append(h('div.tsrpg-warn', `最后发现：${ghost.unit.name}（第 ${ghost.turn} 回合），现在可能已经离开`));
         for (const w of b.reinforcements || []) {
             const turn = E.nextWaveTurn(b, w);
             if (w.x !== x || w.y !== y || turn == null) continue;
@@ -398,15 +451,18 @@ function unitCard(b, u, compact = false, rules = null) {
     const pct = Math.round((u.hp / u.maxHp) * 100);
     return h(`div.tsrpg-card.side-${u.side}`,
         h('div.tsrpg-card-title', h('b', u.name), h('span.tsrpg-tag', E.SIDE_NAMES[u.side]),
+            E.unitTypeName(b, u) ? h('span.tsrpg-tag', { title: b.unitTypes[u.typeId].desc || '' }, E.unitTypeName(b, u)) : null,
             u.object ? h('span.tsrpg-tag', '建筑') : null,
             u.keyTarget ? h('span.tsrpg-tag.key', '★ 关键目标') : null,
             u.acted && !u.object ? h('span.tsrpg-tag', '已行动') : null,
             E.extraActions(b, u) ? h('span.tsrpg-tag', `额外行动 ×${E.extraActions(b, u)}`) : null,
             u.attackOrder === 'last' ? h('span.tsrpg-tag', `${u.weaponName || '重武器'} · 后手`) : null,
+            b.airRule && u.flying ? h('span.tsrpg-tag', { title: '只能被对空攻击或其他飞行单位打到' }, '飞行 · 需对空') : null,
+            b.airRule && u.antiAir && !u.flying ? h('span.tsrpg-tag', { title: '普通攻击可以打到飞行单位' }, '对空') : null,
             E.taunters(b, u).length ? h('span.tsrpg-tag.dead', `被嘲讽：只能攻击${E.taunters(b, u).map(t => t.name).join('、')}`) : null,
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),
         h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), h('span', `HP ${u.hp}/${u.maxHp}`)),
-        statGrid(u, rules),
+        statGrid(u, rules, b),
         (u.traits || []).length ? h('div.tsrpg-statuses', u.traits.map(t =>
             h('span.tsrpg-chip', { title: `${t.desc || ''}\n${E.traitSummary(t)}` }, `特质：${t.name}`))) : null,
         (u.statuses || []).length ? h('div.tsrpg-statuses', u.statuses.map(st => {
@@ -422,7 +478,7 @@ function unitCard(b, u, compact = false, rules = null) {
     );
 }
 
-function statGrid(u, rules) {
+function statGrid(u, rules, b = null) {
     // 受增益 / 减益影响的属性显示为绿色 / 红色
     const cell = (label, key) => {
         const base = u[key], now = E.stat(u, key);
@@ -433,7 +489,8 @@ function statGrid(u, rules) {
         cell('ATK', 'atk'), cell('MATK', 'matk'), cell('DEF', 'def'), cell('MDEF', 'mdef'), cell('AGI', 'agi'), cell('MOV', 'mov'),
         h('div', h('small', '射程'), h('b', String(u.rangeMin === u.rangeMax ? u.rangeMax : `${u.rangeMin}-${u.rangeMax}`))),
         E.toughApplies(u, rules) ? h('div', { title: '每次防御或反击消耗1点，耗尽后只能承受伤害；己方阶段开始时回满' }, h('small', '韧性'),
-            h(`b${E.canBrace(u, rules) ? '' : '.down'}`, `${E.toughLeft(u)}/${E.toughMax(u)}`)) : null);
+            h(`b${E.canBrace(u, rules) ? '' : '.down'}`, `${E.toughLeft(u)}/${E.toughMax(u)}`)) : null,
+        b?.fog?.enabled ? h('div', { title: '战争迷雾中能看到几格内的敌人（含地形加成）' }, h('small', '视野'), h('b', String(E.visionRange(b, u)))) : null);
 }
 
 function actionPanel(app, b, u) {
@@ -489,10 +546,19 @@ function syncBindings(app, b) {
         }
         // 更新前开始的战斗：单位没有韧性字段时按资料卡补上
         if (u.toughMax == null && !u.object) { u.toughMax = E.unitTough(d); u.tough = u.toughMax; changed = true; }
+        // 更新前开始的战斗：补上兵种与视野
+        if (u.typeId == null) { u.typeId = d.typeId || ''; changed = true; }
+        if (u.vision == null) { u.vision = E.unitVision(d); changed = true; }
+        if (u.antiAir == null && !u.object) { u.antiAir = !!d.antiAir; changed = true; }
         // AI 倾向随资料卡更新，已在场的单位也立即生效
         const reckless = d.mapReckless !== false;
         if (u.mapReckless !== reckless) { u.mapReckless = reckless; changed = true; }
     }
+    if (!b.unitTypes) { b.unitTypes = E.battleUnitTypes(app.data.unitTypes); changed = true; }
+    if (!b.fog) { b.fog = { enabled: false, ai: true }; changed = true; }
+    // 对空规则属于资料卡的战斗规则，修改后对进行中的战斗立即生效
+    const airRule = app.data.rules.airTarget === 'antiAir';
+    if (!!b.airRule !== airRule) { b.airRule = airRule; changed = true; }
     if (changed) { ST.saveBattle(); }
     return changed;
 }
@@ -514,11 +580,13 @@ function renderActive(app, root, b) {
     refs.hoverInfo = h('div.tsrpg-hoverinfo');
     // 战斗确认时，在棋子血条上预览这次交战的 HP 变化
     refs.basePreview = ui.engagement && !ui.playback ? engagementForecast(app, b) : null;
+    // 回放中被击败的单位在倒下那一帧仍然显示（淡出）；战争迷雾中只显示看得见的单位
+    const shown = (ui.playback ? b.units.filter(x => (x.hp > 0 && !x.retreated) || ui.playback.effects?.some(e => e.uid === x.uid && e.ko)) : E.alive(b))
+        .filter(x => !fogView(b, ui) || E.visibleTo(b, 'P', x) || ui.playback?.effects?.some(e => e.uid === x.uid && e.ko));
     refs.board = renderBoard({
         w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312),
         terrain: id => b.terrains[id] || { name: id, color: '#999' },
-        // 回放中被击败的单位在倒下那一帧仍然显示（淡出）
-        units: ui.playback ? b.units.filter(x => (x.hp > 0 && !x.retreated) || ui.playback.effects?.some(e => e.uid === x.uid && e.ko)) : E.alive(b),
+        units: [...shown, ...ghostTokens(b, ui, shown)],
         marks: computeMarks(b, ui),
         effects: ui.playback?.effects,
         area: ui.playback?.area,
@@ -567,6 +635,7 @@ function renderActive(app, root, b) {
     add(root,
         h('div.tsrpg-row.tsrpg-topbar',
             h('b', b.mapName), h('span', `第 ${b.turn} 回合`), status,
+            b.fog?.enabled ? h('span.tsrpg-tag', { title: E.fogOn(b, 'E') ? '战争迷雾：双方都只能看到视野内的敌人' : '战争迷雾：我方只能看到视野内的敌人' }, h('i.fa-solid.fa-smog'), ' 迷雾') : null,
             b.phase === 'player' && !b.result ? h('span.tsrpg-muted', `待行动 ${left}`) : null,
             h('div.tsrpg-spacer'),
             button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy, title: '撤销上一步操作' }),
@@ -649,13 +718,18 @@ function forecastHp(b, actor, skill, targets, rules) {
     return map;
 }
 
+/** 战争迷雾中界面只预览看得见的目标（范围攻击打到迷雾里的敌人时，结算后才知道） */
+function shownTargets(b, ui, list) {
+    return fogView(b, ui) ? list.filter(t => E.visibleTo(b, 'P', t)) : list;
+}
+
 function engagementForecast(app, b) {
     const plan = app.bs.engagement;
     const actor = E.getUnit(b, plan.unitId);
     if (!actor) return null;
     const skill = plan.skillId && actor.skills.find(sk => sk.id === plan.skillId);
     const target = plan.targetId && E.getUnit(b, plan.targetId);
-    const targets = skill ? E.skillAffected(b, actor, skill, plan.x, plan.y) : target ? [target] : [];
+    const targets = skill ? shownTargets(b, app.bs, E.skillAffected(b, actor, skill, plan.x, plan.y)) : target ? [target] : [];
     return forecastHp(b, actor, skill || null, targets, app.data.rules);
 }
 
@@ -669,8 +743,14 @@ function previewCard(b, actor, target, rules, skill, reaction, defendingView = f
     const hit = forecastSide(target, targetAfter, `命中 ${p.hit}%${state}`, rules, defendingView ? '' : '.right');
     const strikeTag = countered ? `${p.firstStrike ? '先攻' : '反击'} 命中 ${p.counterHit}%` : p.responds ? `击败则无反击（否则反击 ${p.counter}）` : '无反击';
     const strike = forecastSide(actor, actorAfter, strikeTag, rules, defendingView ? '.right' : '');
+    // 兵种克制：进攻方向，以及对方反击时的方向
+    const edges = [[actor, target], ...(p.responds ? [[target, actor]] : [])].map(([a, d]) => {
+        const label = E.matchupLabel(E.matchup(b, a, d));
+        return label ? `${E.unitTypeName(b, a)}→${E.unitTypeName(b, d)}：${label}` : '';
+    }).filter(Boolean);
     return h('div.tsrpg-exchange-card', { title: `命中伤害 ${p.damage}，命中率 ${p.hit}%，期望伤害 ≈${approx(p.expectedDamage)}${p.responds ? `；${p.firstStrike ? '先攻' : '存活后反击'} ${p.counter}，命中率 ${p.counterHit}%` : ''}` },
         h('div.tsrpg-forecast', defendingView ? [hit, h('div.tsrpg-fc-vs', '⚔'), strike] : [strike, h('div.tsrpg-fc-vs', '⚔'), hit]),
+        edges.length ? h('div.tsrpg-edge', h('i.fa-solid.fa-chess'), ` 兵种克制　${edges.join('；')}`) : null,
         p.firstStrike && p.counter >= actor.hp ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
 }
 
@@ -693,7 +773,7 @@ function engagementPanel(app, b) {
     const actor = E.getUnit(b, plan.unitId);
     const skill = plan.skillId && actor?.skills.find(sk => sk.id === plan.skillId);
     const target = plan.targetId && E.getUnit(b, plan.targetId);
-    const targets = actor ? skill ? E.skillAffected(b, actor, skill, plan.x, plan.y) : target ? [target] : [] : [];
+    const targets = actor ? skill ? shownTargets(b, app.bs, E.skillAffected(b, actor, skill, plan.x, plan.y)) : target ? [target] : [] : [];
     const covered = t => actor && E.coverFor(b, actor, t, skill);
     return h('div.tsrpg-engagement',
         h('div.tsrpg-section-title', '战斗确认'),
@@ -705,7 +785,7 @@ function engagementPanel(app, b) {
             return [h('div.tsrpg-warn', `【援护】${c.unit.name}将替${t.name}承受这次攻击（不反击）`),
                 previewCard(b, actor, c.unit, app.data.rules, skill, E.defaultReaction(b, actor, c.unit, app.data.rules, skill, true))];
         }),
-        !targets.length ? h('div.tsrpg-warn', '范围内没有目标；执行仍会消耗技能。') : null,
+        !targets.length ? h('div.tsrpg-warn', fogView(b, app.bs) ? '范围内没有看得见的目标（迷雾中可能有敌人）；执行仍会消耗技能。' : '范围内没有目标；执行仍会消耗技能。') : null,
         h('small.tsrpg-muted', '血条上的斜纹＝命中时将损失的 HP；悬停卡片可查看具体数值。'),
         h('div.tsrpg-row',
             button('战斗', () => performEngagement(app, b, false), { icon: 'fa-khanda', cls: 'primary' }),
@@ -871,15 +951,20 @@ function manualPanel(app, b) {
         field('所选单位', select([['', '— 选择单位 —'], ...b.units.map(unit => [unit.uid, `${unit.name} · ${E.SIDE_NAMES[unit.side]}${unit.retreated ? '（已撤除）' : unit.hp <= 0 ? '（倒下）' : ''}`])], ui.sel || '', v => { ui.sel = v || null; app.render(); })),
         u ? [
             h('div.tsrpg-grid3',
-                [['hp', '当前HP'], ['maxHp', '最大HP'], ['atk', 'ATK'], ['matk', 'MATK'], ['def', 'DEF'], ['mdef', 'MDEF'], ['agi', 'AGI'], ['mov', 'MOV'], ['rangeMin', '最小射程'], ['rangeMax', '最大射程'], ['tough', '当前韧性'], ['toughMax', '韧性上限']].map(([key, label]) => field(label, numInput(key === 'tough' ? E.toughLeft(u) : key === 'toughMax' ? E.toughMax(u) : u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value }), { min: key === 'maxHp' ? 1 : 0 })))),
+                [['hp', '当前HP'], ['maxHp', '最大HP'], ['atk', 'ATK'], ['matk', 'MATK'], ['def', 'DEF'], ['mdef', 'MDEF'], ['agi', 'AGI'], ['mov', 'MOV'], ['rangeMin', '最小射程'], ['rangeMax', '最大射程'], ['tough', '当前韧性'], ['toughMax', '韧性上限'], ['vision', '视野']].map(([key, label]) => field(label, numInput(key === 'tough' ? E.toughLeft(u) : key === 'toughMax' ? E.toughMax(u) : key === 'vision' ? E.stat({ ...u, statuses: [], traits: [] }, 'vision') : u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value }), { min: key === 'maxHp' ? 1 : 0 })))),
+            field('兵种', select([['', '— 无兵种 —'], ...Object.entries(b.unitTypes || {}).map(([id, t]) => [id, t.name])], u.typeId || '', value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'typeId', value }))),
             field('阵营', select(Object.entries(E.SIDE_NAMES), u.side, value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'side', value }))),
             field('普通攻击顺序', select([['normal', '普通'], ['last', '后手 / 大剑']], u.attackOrder || 'normal', value => manualChange(app, b, { type: 'stat', uid: u.uid, key: 'attackOrder', value }))),
-            h('div.tsrpg-row', ['flying', 'acted', 'keyTarget'].map((key, i) => checkbox(['飞行', '已行动', '关键目标'][i], u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value })))),
+            h('div.tsrpg-row', ['flying', 'antiAir', 'acted', 'keyTarget'].map((key, i) => checkbox(['飞行', '普通攻击可对空', '已行动', '关键目标'][i], !!u[key], value => manualChange(app, b, { type: 'stat', uid: u.uid, key, value })))),
             h('div.tsrpg-row',
                 button('满血 / 重置行动技能', () => manualChange(app, b, { type: 'restore', uid: u.uid }), { icon: 'fa-heart' }),
                 button('撤除所选单位', () => manualChange(app, b, { type: 'remove', uid: u.uid }), { cls: 'danger' })),
         ] : null,
         button('击败场上全部敌人', () => manualChange(app, b, { type: 'defeatEnemies' }), { cls: 'danger' }),
+        h('div.tsrpg-row',
+            checkbox('战争迷雾', !!b.fog?.enabled, enabled => manualChange(app, b, { type: 'fog', enabled, ai: b.fog?.ai !== false })),
+            b.fog?.enabled ? checkbox('敌方 AI 受迷雾限制', b.fog.ai !== false, ai => manualChange(app, b, { type: 'fog', enabled: true, ai })) : null),
+        b.fog?.enabled ? h('small.tsrpg-muted', '手动修改期间显示全部单位（含迷雾中的敌人）；退出后恢复迷雾。') : null,
         h('small.tsrpg-muted', '可撤销；资料卡不受影响。修改会保存在战斗中，并在下一次发送行动时附带说明。'),
     );
 }
@@ -915,7 +1000,7 @@ async function endTurn(app, b, quiet = false) {
     }
     if (app.bs !== ui || ST.getBattle() !== b) return;
     ui.busy = null;
-    b.pending.push(...events);
+    b.pending.push(...hideFogEvents(b, events));
     recordCheckpoint(b, { chat: ST.chatLength() });
     app.bs.undo = [];
     app.bs.sel = null; app.bs.mode = 'idle';
@@ -927,6 +1012,20 @@ async function endTurn(app, b, quiet = false) {
     if (narratedActors.size) {
         sendEngagementNarration(app, b, events.filter(e => narratedActors.has(e.actor?.uid) && ['attack', 'skill', 'move'].includes(e.type)));
     } else if (!quiet && app.settings.send.autoOnEndTurn) dispatch(app, b);
+}
+
+/** 我方看不到的敌方行动不进入待发送列表；只留一句「迷雾中有动静」 */
+function hideFogEvents(b, events) {
+    const out = [];
+    let noted = false;
+    for (const e of events) {
+        if (!e.fog) { out.push(e); continue; }
+        if (!noted && ['move', 'skill', 'wait'].includes(e.type)) {
+            out.push({ type: 'fogActivity', turn: e.turn, actor: { side: e.actor?.side || 'enemy', name: '' } });
+            noted = true;
+        }
+    }
+    return out;
 }
 
 /** LLM 在回复里提议的战场变化，等待确认 */

@@ -20,11 +20,21 @@ export function* actionFrames(before, after, events) {
         target.hp = result.hpAfter;
         yield frame(label, [effect(target, result.reaction === 'defend' ? 'm-guard' : 'm-impact', result.hit === false || result.missed ? 'MISS' : `${result.hpAfter > result.hpBefore ? '+' : '−'}${Math.abs(result.hpAfter - result.hpBefore)}`, hpFx(target, from))]);
     }
+    // 战争迷雾：攻击暴露双方位置（与引擎一致），我方看不到的行动只更新状态、不播放
+    const reveal = (...us) => { if (state.fog?.enabled) us.forEach(u => { if (u) u.revealed = true; }); };
     for (const e of events.filter(Boolean)) {
         const actor = unit(e.actor?.uid);
+        if (e.fog) {
+            if (e.type === 'move' && actor) { actor.x = e.to.x; actor.y = e.to.y; actor.moved = true; if (e.terrainDamage) actor.hp = e.terrainDamage.hpAfter; }
+            if (['terrainDamage', 'terrainHeal', 'dot'].includes(e.type) && actor) actor.hp = e.hpAfter;
+            if (e.type === 'skill') for (const r of e.results) { const t = unit(r.target.uid); if (t) t.hp = r.hpAfter; }
+            if (['skill', 'wait', 'stunned'].includes(e.type) && actor && !e.skill?.quick) { actor.acted = true; actor.moved = true; }
+            continue;
+        }
         switch (e.type) {
             case 'move': {
                 if (!actor) break;
+                if (e.ambush) reveal(unit(e.ambush.uid));
                 const path = e.path?.length ? e.path.slice(1) : [e.to];
                 for (const point of path) {
                     actor.x = point.x; actor.y = point.y;
@@ -35,12 +45,14 @@ export function* actionFrames(before, after, events) {
                 break;
             }
             case 'attack':
+                reveal(actor, unit(e.target.uid));
                 if (e.firstStrike) yield* hit(e.target.uid, e.actor.uid, e.firstStrike, `${e.target.name} 先攻`);
                 if (!e.cancelled) yield* hit(e.actor.uid, e.target.uid, e, `${e.actor.name} 攻击 ${e.target.name}${e.reaction === 'defend' ? '（防御）' : ''}`);
                 if (e.counter) yield* hit(e.target.uid, e.actor.uid, e.counter, `${e.target.name} 反击`);
                 if (actor) { actor.moved = true; actor.acted = true; }
                 break;
             case 'skill': {
+                if (e.skill.kind !== 'support' || e.skill.target === 'enemy') reveal(actor, ...e.results.filter(r => (r.target.side === 'enemy') !== (e.actor.side === 'enemy')).map(r => unit(r.target.uid)));
                 yield frame(`${e.actor.name} 使用 ${e.skill.name}`, [effect(actor, 'm-acting')], e.area || []);
                 if (e.teleport && actor) {
                     actor.x = e.teleport.to.x; actor.y = e.teleport.to.y;
@@ -70,6 +82,7 @@ export function* actionFrames(before, after, events) {
                 state.phase = e.phase; state.turn = e.turn;
                 for (const u of state.units) {
                     if (e.phase === 'player' || u.side === e.phase) { u.moved = false; u.acted = false; }
+                    if (u.side === e.phase) u.revealed = false;
                 }
                 yield frame(`第 ${e.turn} 回合 · ${{ player: '我方', enemy: '敌方', ally: '友军' }[e.phase]}阶段`);
                 break;

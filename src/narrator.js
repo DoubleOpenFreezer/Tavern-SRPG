@@ -1,5 +1,5 @@
 // 把战斗事件 / 战场状态翻译成给 LLM 的文本
-import { SIDE_NAMES, MISSION_NAMES, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel, defendLossLimit } from './engine.js';
+import { SIDE_NAMES, MISSION_NAMES, missionOf, guardTargets, enemyKeyTargets, nextWaveTurn, effectLabel, defendLossLimit, matchupLabel } from './engine.js';
 
 const pos = p => `(${p.x + 1},${p.y + 1})`;
 const KIND = { physical: '物理', magical: '魔法', support: '辅助', heal: '治疗' };
@@ -17,7 +17,7 @@ function hpChange(r) {
 /** 事件属于哪个描写类别 */
 export function eventCategory(e) {
     switch (e.type) {
-        case 'move': case 'wait': return 'move';
+        case 'move': case 'wait': case 'fogActivity': return 'move';
         case 'attack': return 'attack';
         case 'skill': return 'skill';
         case 'phase': case 'terrainHeal': case 'terrainDamage': case 'mission': return 'turn';
@@ -70,8 +70,15 @@ function formatEventBody(e) {
     switch (e.type) {
         case 'llm':
             return formatLlm(e);
-        case 'move':
-            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+        case 'move': {
+            const ambush = e.ambush ? `途中在迷雾里撞上埋伏的 ${who(e.ambush)}，被迫停下。` : '';
+            if (e.ambush && e.from.x === e.to.x && e.from.y === e.to.y) return `${who(e.actor)} 刚要从 ${pos(e.from)}${e.fromTerrain} 出发，就在迷雾里撞上埋伏的 ${who(e.ambush)}，被迫停下。`;
+            if (e.fogIn) return `${who(e.actor)} 从迷雾中现身，出现在 ${pos(e.to)}${e.terrain}。${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+            if (e.fogOut) return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 离开，消失在迷雾中。`;
+            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${ambush}${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+        }
+        case 'fogActivity':
+            return '迷雾中传来敌军活动的动静，但看不清具体动向。';
         case 'manual':
             return `【手动修改】${e.text}`;
         case 'rewind':
@@ -99,6 +106,7 @@ function formatEventBody(e) {
                 : e.hit === false
                 ? `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，但被 ${e.target.name} 闪避了（未命中）`
                 : `${who(e.actor)} 对 ${who(e.target)} 发动${KIND[e.atkType]}普通攻击，造成 ${e.damage} 点伤害（${e.target.name} ${hpChange(e)}）`;
+            if (e.matchup) s += `（兵种${e.matchup.dmg >= 100 ? '克制' : '劣势'}：${matchupLabel(e.matchup)}）`;
             if (e.killed) s += `，${e.target.name} 被击败`;
             if (e.counter) {
                 s += e.counter.hit === false
@@ -118,7 +126,7 @@ function formatEventBody(e) {
                 if (r.exhausted) bits.push('韧性耗尽，无法防御');
                 if (r.endured) bits.push('选择硬接（保留韧性）');
                 if (r.reaction === 'defend') bits.push('选择防御');
-                if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害`);
+                if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害${r.matchup ? `（兵种${r.matchup.dmg >= 100 ? '克制' : '劣势'}：${matchupLabel(r.matchup)}）` : ''}`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
                 for (const ef of r.effects || []) {
                     if (ef.heal != null) continue;
@@ -188,7 +196,8 @@ function briefEvent(e) {
 export function composeMessage(battle, events, settings, note = '', { force, background } = {}) {
     const n = settings.narration;
     const narrate = [], brief = [];
-    for (const e of events) {
+    // 战争迷雾中我方看不到的行动不告诉 LLM
+    for (const e of events.filter(e => !e.fog)) {
         const bg = !force?.(e) && background?.(e);
         if (!bg && (force?.(e) || shouldNarrate(e, n))) narrate.push(formatEvent(e));
         else if (n.brief || bg) {
@@ -260,6 +269,7 @@ export function skillSummary(sk) {
     if (side !== 'self' && Number(sk.radius) && !['mapLine', 'mapArea'].includes(sk.attackMode)) parts.push(`范围${sk.radius}`);
     if (sk.kind === 'support' && sk.quick) parts.push('速攻（不消耗行动，每回合一次）');
     if (Number(sk.cooldown) > 1) parts.push(`冷却${sk.cooldown}回合`);
+    if (sk.antiAir && side === 'enemy') parts.push('可对空');
     if (side === 'enemy' && sk.sureHit) parts.push('必中');
     else if (side === 'enemy' && Number(sk.hitMod)) parts.push(`命中${sk.hitMod > 0 ? '+' : ''}${sk.hitMod}%`);
     if (sk.uses) parts.push(`剩余${sk.usesLeft ?? sk.uses}/${sk.uses}次`);

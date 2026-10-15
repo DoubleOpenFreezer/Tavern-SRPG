@@ -1,5 +1,5 @@
 // SillyTavern 适配层：设置、聊天元数据、世界书、发送消息、提示词注入
-import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, uid, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS } from './defaults.js';
+import { MODULE_NAME, META_KEY, defaultSettings, makeProfile, uid, sampleProfile, SAMPLE_PROFILE_ID, PROFILE_KEYS, DEFAULT_TERRAINS } from './defaults.js';
 import { normalizeSkill } from './engine.js';
 import { profileFor } from './profiles.js';
 
@@ -62,7 +62,13 @@ export function migrateToProfiles(st) {
 /** 补齐资料卡字段，升级旧格式的技能 / 单位 / 地形 */
 export function normalizeProfile(p) {
     const fresh = makeProfile();
-    for (const k of ['terrains', 'units', 'maps']) if (!Array.isArray(p[k])) p[k] = fresh[k];
+    for (const k of ['terrains', 'unitTypes', 'units', 'maps']) if (!Array.isArray(p[k])) p[k] = fresh[k];
+    p.unitTypes = p.unitTypes.filter(t => t && typeof t === 'object');
+    for (const t of p.unitTypes) {
+        t.id ||= uid('type');
+        t.name ||= '未命名兵种';
+        if (!t.vs || typeof t.vs !== 'object') t.vs = {};
+    }
     p.rules = { ...fresh.rules, ...(p.rules || {}) };
     p.name ||= '未命名资料卡';
     for (const u of p.units) {
@@ -76,8 +82,16 @@ export function normalizeProfile(p) {
         (u.skills || []).forEach(normalizeSkill); // 旧版技能（kind: 'heal'、无冷却 / 效果字段）
         if (u.agi == null) u.agi = u.kind === 'object' ? 0 : 5; // v3 新增敏捷
         if (u.tough == null) u.tough = 2; // v0.17 新增韧性
+        if (u.typeId == null) u.typeId = ''; // v0.20 新增兵种与视野
+        if (u.vision == null) u.vision = u.kind === 'object' ? 0 : 4;
     }
-    for (const t of p.terrains) if (t.avoid == null) t.avoid = 0;
+    for (const m of p.maps) if (!m.fog || typeof m.fog !== 'object') m.fog = { enabled: false, ai: true };
+    for (const t of p.terrains) {
+        if (t.avoid == null) t.avoid = 0;
+        // 内置地形补上视野相关字段（森林隐蔽、山地 / 堡垒视野加成、城墙遮挡视线）
+        const base = DEFAULT_TERRAINS.find(d => d.id === t.id);
+        for (const k of ['conceal', 'visionBonus', 'blockSight']) if (t[k] == null && base?.[k] != null) t[k] = base[k];
+    }
     return p;
 }
 
@@ -189,6 +203,95 @@ export async function getEntryContent(wb) {
     } catch {
         return '';
     }
+}
+
+/** 当前聊天会用到的世界书：角色卡（含附加世界书）、群组成员、聊天绑定和全局启用的世界书 */
+export async function chatLoreBooks() {
+    const c = ctx();
+    const mod = await worldInfoModule();
+    const names = new Set();
+    const addChar = ch => {
+        if (!ch) return;
+        if (ch.data?.extensions?.world) names.add(ch.data.extensions.world);
+        const extra = (mod?.world_info?.charLore || []).find(x => x.name === ch.avatar)?.extraBooks;
+        (extra || []).forEach(n => names.add(n));
+    };
+    const owner = currentOwner();
+    if (owner?.kind === 'char') addChar(owner.character);
+    if (owner?.kind === 'group') {
+        const g = (c.groups || []).find(x => String(x.id) === String(c.groupId));
+        (g?.members || []).forEach(m => addChar((c.characters || []).find(ch => ch.avatar === m)));
+    }
+    if (c.chatMetadata?.world_info) names.add(c.chatMetadata.world_info);
+    (Array.isArray(mod?.selected_world_info) ? mod.selected_world_info : []).forEach(n => names.add(n));
+    return [...names].filter(Boolean);
+}
+
+/**
+ * 把世界书整理成给 AI 设计助手看的文字（只含启用的条目），超出字数上限时截断。
+ * @returns {Promise<{text:string, entries:{book:string,uid:number,label:string,keys:string[]}[], truncated:boolean}>}
+ */
+export async function loreForDesign(books, maxChars = 24000) {
+    const parts = [], entries = [];
+    let used = 0, truncated = false;
+    for (const book of books || []) {
+        let list = [];
+        try { list = await loadBookEntries(book, true); } catch { continue; }
+        for (const e of list) {
+            if (e.disabled || !e.content.trim()) continue;
+            entries.push({ book, uid: e.uid, label: e.label, keys: e.keys });
+            const block = `【${book}｜${e.label}】${e.keys.length ? `（关键词：${e.keys.slice(0, 5).join('、')}）` : ''}\n${substitute(e.content.trim())}`;
+            if (used + block.length > maxChars) { truncated = true; continue; }
+            parts.push(block);
+            used += block.length;
+        }
+    }
+    return { text: parts.join('\n\n'), entries, truncated };
+}
+
+/** 角色卡（或群组成员）的设定：名字、描述、性格、场景 */
+export function characterBrief(maxChars = 6000) {
+    const c = ctx();
+    const owner = currentOwner();
+    let chars = [];
+    if (owner?.kind === 'char') chars = [owner.character];
+    else if (owner?.kind === 'group') {
+        const g = (c.groups || []).find(x => String(x.id) === String(c.groupId));
+        chars = (g?.members || []).map(m => (c.characters || []).find(ch => ch.avatar === m)).filter(Boolean);
+    }
+    const text = chars.map(ch => {
+        const d = ch.data || ch;
+        return [`名字：${ch.name}`, d.description && `描述：${d.description}`, d.personality && `性格：${d.personality}`, d.scenario && `场景：${d.scenario}`]
+            .filter(Boolean).join('\n');
+    }).join('\n\n');
+    const user = c.name1 ? `\n\n用户扮演的角色：${c.name1}` : '';
+    return substitute(text + user).slice(0, maxChars);
+}
+
+/** 用 SillyTavern 当前选择的 API 生成（不带聊天记录），兼容新旧两种 generateRaw 签名 */
+export async function generateRawST(system, prompt, maxTokens) {
+    const fn = ctx().generateRaw;
+    if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持 generateRaw，请改用连接配置或自定义 API');
+    // 新版是 generateRaw({ prompt, systemPrompt, responseLength, … })，旧版是 generateRaw(prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength)
+    const objectStyle = fn.length === 0 || /^[^(]*\(\s*\{/.test(Function.prototype.toString.call(fn));
+    const res = objectStyle
+        ? await fn({ prompt, systemPrompt: system, responseLength: maxTokens })
+        : await fn(prompt, null, false, false, system, maxTokens);
+    return String(res ?? '');
+}
+
+/** SillyTavern「连接配置」扩展中保存的配置（不包含密钥） */
+export function connectionProfiles() {
+    const list = ctx().extensionSettings?.connectionManager?.profiles;
+    return Array.isArray(list) ? list.filter(p => p?.id).map(p => ({ id: p.id, name: p.name || p.id, api: p.api || '', model: p.model || '' })) : [];
+}
+
+/** 用指定的连接配置生成，请求经由 SillyTavern 后端（密钥留在 SillyTavern 里） */
+export async function generateWithProfile(profileId, system, prompt, maxTokens) {
+    const svc = ctx().ConnectionManagerRequestService;
+    if (!svc?.sendRequest) throw new Error('当前 SillyTavern 版本没有连接配置请求服务，请更新 SillyTavern 或改用其他方式');
+    const res = await svc.sendRequest(profileId, [{ role: 'system', content: system }, { role: 'user', content: prompt }], maxTokens);
+    return typeof res === 'string' ? res : String(res?.content ?? '');
 }
 
 // ---------------------------------------------------------------- 注入 & 发送

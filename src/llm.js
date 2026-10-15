@@ -1,6 +1,6 @@
 // 让 LLM 读取战场：宏（{{srpg}} 等）与函数调用工具
 import { ctx, getBattle, substitute } from './st.js';
-import { alive } from './engine.js';
+import { alive, visibleTo } from './engine.js';
 import { unitAliases } from './context.js';
 
 /** 宏名 → [说明, 要输出的部分（null＝全部）] */
@@ -82,5 +82,5 @@ function unitInfo(app, b, query) {
     if (match) return match.join('\n');
     const dead = b.units.find(u => u.hp <= 0 && (u.name.toLowerCase().includes(q) || unitAliases(u).some(a => substitute(a).toLowerCase().includes(q))));
     if (dead) return `${dead.name} 已经倒下。`;
-    return `战场上没有名为「${query}」的单位。在场单位：${alive(b).map(u => u.name).join('、')}`;
+    return `战场上没有名为「${query}」的单位。在场单位：${alive(b).filter(u => visibleTo(b, 'P', u)).map(u => u.name).join('、')}`;
 }

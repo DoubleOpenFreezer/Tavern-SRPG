@@ -49,6 +49,172 @@ export function enterCost(b, unit, x, y) {
 
 }
 
+// ---------------------------------------------------------------- 兵种克制
+// 攻击方兵种对防守方兵种：伤害倍率%、命中修正、防守方防御 / 反击时消耗的韧性倍数。
+
+export const NEUTRAL_MATCHUP = Object.freeze({ dmg: 100, hit: 0, tough: 1 });
+
+export function matchup(b, attacker, defender) {
+    const vs = b?.unitTypes?.[attacker?.typeId]?.vs?.[defender?.typeId];
+    if (!vs) return NEUTRAL_MATCHUP;
+    const num = (v, d) => v === '' || v == null || !Number.isFinite(Number(v)) ? d : Number(v);
+    return { dmg: Math.max(0, num(vs.dmg, 100)), hit: num(vs.hit, 0), tough: Math.max(0, Math.floor(num(vs.tough, 1))) };
+}
+
+export function isNeutralMatchup(m) {
+    return !m || (m.dmg === 100 && !m.hit && m.tough === 1);
+}
+
+/** 例如「伤害150%、命中+10%、韧性消耗×2」 */
+export function matchupLabel(m) {
+    if (isNeutralMatchup(m)) return '';
+    const bits = [];
+    if (m.dmg !== 100) bits.push(`伤害${m.dmg}%`);
+    if (m.hit) bits.push(`命中${m.hit > 0 ? '+' : ''}${m.hit}%`);
+    if (m.tough !== 1) bits.push(m.tough ? `韧性消耗×${m.tough}` : '招架不消耗韧性');
+    return bits.join('、');
+}
+
+export function unitTypeName(b, u) {
+    return b?.unitTypes?.[u?.typeId]?.name || '';
+}
+
+// ---------------------------------------------------------------- 视野与战争迷雾
+// 地形始终可见；单位只有在己方（我方＋友军共享视野）某个单位的视野内才可见。
+// 建筑、刚攻击或被攻击过的单位（revealed，到其阵营下一阶段开始）、嘲讽和「暴露行踪」的单位总是可见。
+
+export const DEFAULT_VISION = 4;
+
+/** 该阵营（P＝我方与友军，E＝敌方）是否受战争迷雾限制 */
+export function fogOn(b, teamKey = 'P') {
+    return !!b?.fog?.enabled && (teamKey === 'P' || b.fog.ai !== false);
+}
+
+export function blocksSight(t) {
+    return t.blockSight != null ? !!t.blockSight : t.passable === false && t.flyable === false; // 旧地形：城墙类挡住视线
+}
+
+/** 视野范围：视野属性（含增减益）＋所在地形的视野加成 */
+export function visionRange(b, u) {
+    if (u.hp <= 0 || u.retreated) return 0;
+    return Math.max(0, stat(u, 'vision') + (Number(terrainAt(b, u.x, u.y).visionBonus) || 0));
+}
+
+/** 两格之间是否有挡住视线的地形（不计两端）；正好擦过格角时，两侧都挡住才算被挡 */
+export function lineOfSight(b, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const n = Math.max(Math.abs(dx), Math.abs(dy)) * 2;
+    const opaque = (x, y) => !(x === x0 && y === y0) && !(x === x1 && y === y1) && blocksSight(terrainAt(b, x, y));
+    const near = v => { const f = Math.floor(v); return v - f === 0.5 ? [f, f + 1] : [Math.round(v)]; };
+    for (let i = 1; i < n; i++) {
+        const xs = near(x0 + (dx * i) / n), ys = near(y0 + (dy * i) / n);
+        if (xs.every(x => ys.every(y => opaque(x, y)))) return false;
+    }
+    return true;
+}
+
+/** 某阵营能提供视野的单位，附带视野范围 */
+function viewers(b, teamKey) {
+    const out = [];
+    for (const v of b.units) {
+        if (v.hp <= 0 || v.retreated || team(v) !== teamKey) continue;
+        const r = visionRange(b, v);
+        if (r > 0) out.push({ x: v.x, y: v.y, r });
+    }
+    return out;
+}
+
+function seesTile(b, eye, x, y) {
+    return dist(eye.x, eye.y, x, y) <= eye.r && lineOfSight(b, eye.x, eye.y, x, y);
+}
+
+/** 站在 (x,y) 的单位能否被 eye 发现：隐蔽地形只能在近处发现（飞行单位不受隐蔽） */
+function spotsAt(b, eye, x, y, flying = false) {
+    const conceal = flying ? 0 : Math.max(0, Number(terrainAt(b, x, y).conceal) || 0);
+    if (conceal > 0 && dist(eye.x, eye.y, x, y) > conceal) return false;
+    return seesTile(b, eye, x, y);
+}
+
+/** 某阵营能否看到单位 u */
+export function visibleTo(b, teamKey, u) {
+    if (!fogOn(b, teamKey) || team(u) === teamKey || u.object || u.revealed) return true;
+    if ((u.statuses || []).some(s => s.type === 'reveal' || s.type === 'taunt')) return true;
+    return viewers(b, teamKey).some(eye => spotsAt(b, eye, u.x, u.y, u.flying));
+}
+
+/** 我方视野看不到的敌方单位 */
+export function hiddenFromPlayer(b, u) {
+    return fogOn(b, 'P') && team(u) === 'E' && !visibleTo(b, 'P', u);
+}
+
+/** 单位所在阵营已经发现的敌人 */
+export function knownFoes(b, unit) {
+    return alive(b).filter(t => isFoe(t, unit) && visibleTo(b, team(unit), t));
+}
+
+/** 某阵营视野内的格子（用于界面显示迷雾） */
+export function visibleTiles(b, teamKey = 'P') {
+    const seen = new Set();
+    for (const v of viewers(b, teamKey)) {
+        for (const [x, y] of tilesInRange(b, v.x, v.y, 0, v.r)) {
+            if (!seen.has(`${x},${y}`) && lineOfSight(b, v.x, v.y, x, y)) seen.add(`${x},${y}`);
+        }
+    }
+    return seen;
+}
+
+/** 某阵营眼中 (x,y) 上的单位（看不见的敌人视为空格） */
+export function visibleUnitAt(b, teamKey, x, y) {
+    const u = unitAt(b, x, y);
+    return u && visibleTo(b, teamKey, u) ? u : null;
+}
+
+function fogTag(b, u, ev) {
+    if (ev && u && hiddenFromPlayer(b, u)) ev.fog = true;
+    return ev;
+}
+
+/** 攻击会暴露双方位置，直到各自阵营的下一个阶段开始 */
+function reveal(b, ...units) {
+    if (b.fog?.enabled) for (const u of units) if (u) u.revealed = true;
+}
+
+/**
+ * 情报：各阵营记得的敌人位置（最后发现位置）。看到时更新；再次看到原位置却没有人时忘掉。
+ * AI 受迷雾限制时，看不到任何敌人就朝这些位置搜索。
+ */
+export function updateIntel(b) {
+    if (!b?.fog?.enabled) return;
+    b.intel ||= {};
+    for (const T of ['P', 'E']) {
+        const memo = b.intel[T] ||= {};
+        if (!fogOn(b, T)) continue;
+        const eyes = viewers(b, T);
+        for (const f of b.units) {
+            if (team(f) === T || f.object) continue;
+            const known = memo[f.uid];
+            if (f.hp <= 0 || f.retreated) delete memo[f.uid];
+            else if (visibleTo(b, T, f)) memo[f.uid] = { x: f.x, y: f.y, turn: b.turn };
+            else if (known && eyes.some(v => spotsAt(b, v, known.x, known.y))) delete memo[f.uid];
+        }
+    }
+}
+
+/** 开启迷雾时初始化情报：敌方知道我方的布阵位置，我方只知道看得见的敌人 */
+export function initFog(b) {
+    if (!b.fog?.enabled) return;
+    b.intel = { P: {}, E: {} };
+    for (const u of alive(b)) if (team(u) === 'P' && !u.object) b.intel.E[u.uid] = { x: u.x, y: u.y, turn: b.turn };
+    updateIntel(b);
+}
+
+/** 某阵营记得、但现在看不到的敌人位置 */
+export function lastSeen(b, teamKey = 'P') {
+    if (!fogOn(b, teamKey)) return [];
+    return Object.entries(b.intel?.[teamKey] || {}).map(([uid, p]) => ({ unit: getUnit(b, uid), ...p }))
+        .filter(g => g.unit && g.unit.hp > 0 && !g.unit.retreated && !visibleTo(b, teamKey, g.unit));
+}
+
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 /** 最小堆（按 key 取最小） */
@@ -84,9 +250,11 @@ class Heap {
 
 /**
  * 计算可到达的格子（Dijkstra）。敌对单位阻挡通行，友方可穿过但不能停留。
+ * @param {boolean} fogView 按该单位阵营的视野计算：看不见的敌人视为空格（战争迷雾中给玩家显示用）
  * @returns {Map<string,{x:number,y:number,cost:number,prev:string|null}>} 仅包含可停留的格子
  */
-export function reachable(b, unit, maxMove = stat(unit, 'mov'), includeOccupied = false) {
+export function reachable(b, unit, maxMove = stat(unit, 'mov'), includeOccupied = false, fogView = false) {
+    const seen = t => !fogView || visibleTo(b, team(unit), t);
     const start = `${unit.x},${unit.y}`;
     const best = new Map([[start, { x: unit.x, y: unit.y, cost: 0, prev: null }]]);
     const queue = new Heap(n => n.cost);
@@ -98,7 +266,7 @@ export function reachable(b, unit, maxMove = stat(unit, 'mov'), includeOccupied 
             const nx = cur.x + dx, ny = cur.y + dy;
             if (!inBounds(b, nx, ny)) continue;
             const occ = unitAt(b, nx, ny);
-            if (occ && occ !== unit && isFoe(occ, unit)) continue;
+            if (occ && occ !== unit && isFoe(occ, unit) && seen(occ)) continue;
             const c = cur.cost + enterCost(b, unit, nx, ny);
             if (c > maxMove + 1e-9) continue; // 小数消耗累加的浮点误差
             const key = `${nx},${ny}`;
@@ -112,7 +280,7 @@ export function reachable(b, unit, maxMove = stat(unit, 'mov'), includeOccupied 
     // 移除被其他单位占据的格子（可穿过但不可停留）
     for (const [key, node] of includeOccupied ? [] : best) {
         const occ = unitAt(b, node.x, node.y);
-        if (occ && occ !== unit) best.delete(key);
+        if (occ && occ !== unit && seen(occ)) best.delete(key);
     }
     return best;
 }
@@ -189,6 +357,7 @@ export const EFFECTS = {
     mdef_up: { name: '魔防上升', group: '增益', stat: 'mdef', sign: 1, value: 30, unit: '%' },
     agi_up: { name: '敏捷上升', group: '增益', stat: 'agi', sign: 1, value: 30, unit: '%', help: '提高命中与闪避' },
     mov_up: { name: '移动力上升', group: '增益', stat: 'mov', sign: 1, value: 2, unit: '格', flat: true },
+    vision_up: { name: '视野上升', group: '增益', stat: 'vision', sign: 1, value: 2, unit: '格', flat: true, help: '战争迷雾中看得更远' },
     regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
     taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
     cover: { name: '援护', group: '增益', noValue: true, help: '施法者替目标承受下一次单体攻击（普通攻击或单体伤害技能），承受一次后消失；援护者不反击，可以防御。不能援护自己' },
@@ -199,6 +368,8 @@ export const EFFECTS = {
     mdef_down: { name: '魔防下降', group: '减益', stat: 'mdef', sign: -1, value: 30, unit: '%', debuff: true },
     agi_down: { name: '敏捷下降', group: '减益', stat: 'agi', sign: -1, value: 30, unit: '%', debuff: true, help: '降低命中与闪避' },
     mov_down: { name: '移动力下降', group: '减益', stat: 'mov', sign: -1, value: 2, unit: '格', flat: true, debuff: true },
+    vision_down: { name: '视野下降', group: '减益', stat: 'vision', sign: -1, value: 2, unit: '格', flat: true, debuff: true, help: '战争迷雾中看得更近' },
+    reveal: { name: '暴露行踪', group: '减益', noValue: true, debuff: true, help: '战争迷雾中，所有敌人都能看到该单位' },
     poison: { name: '中毒', group: '减益', value: 10, unit: '% 最大HP / 回合', debuff: true, help: '每次自己阵营的阶段开始时损失生命，不会因此倒下' },
     stun: { name: '眩晕', group: '减益', noValue: true, debuff: true, help: '无法行动' },
 };
@@ -219,7 +390,7 @@ export function traitEffects(u) {
 export function traitSummary(t) {
     return (t.effects || []).filter(e => TRAIT_EFFECTS[e.type]).map(e => {
         const d = TRAIT_EFFECTS[e.type], value = Math.max(0, Number(e.value) || 0);
-        if (d.stat) return `${d.stat.toUpperCase()}${d.sign > 0 ? '+' : '-'}${value}${d.flat || e.flat ? (d.stat === 'mov' ? '格' : '点') : '%'}`;
+        if (d.stat) return `${d.stat === 'vision' ? '视野' : d.stat.toUpperCase()}${d.sign > 0 ? '+' : '-'}${value}${d.flat || e.flat ? (['mov', 'vision'].includes(d.stat) ? '格' : '点') : '%'}`;
         if (e.type === 'attract') return `${value ? value + '格内' : '全图'}敌人优先攻击自己`;
         return `自己阵营回合开始恢复${value}${e.type === 'regen' ? '%最大HP' : 'HP'}`;
     }).join('、');
@@ -228,7 +399,7 @@ export function traitSummary(t) {
 /** 吸引优先级依据敌人本阶段起点；不会限制玩家的攻击选择。 */
 export function attractionTargets(b, unit) {
     const px = unit.phaseX ?? unit.x, py = unit.phaseY ?? unit.y;
-    return alive(b).filter(t => isFoe(t, unit) && traitEffects(t).some(e =>
+    return knownFoes(b, unit).filter(t => traitEffects(t).some(e =>
         e.type === 'attract' && (!Number(e.value) || dist(t.x, t.y, px, py) <= Math.max(0, Number(e.value) || 0))));
 }
 
@@ -270,7 +441,8 @@ export function isStunned(u) {
 
 /** 计入增益 / 减益后的属性 */
 export function stat(u, key) {
-    const base = Number(u[key]) || 0;
+    // 旧战斗中的单位没有视野字段
+    const base = key === 'vision' && u.vision == null ? (u.object ? 0 : DEFAULT_VISION) : Number(u[key]) || 0;
     let pct = 0, flat = 0;
     for (const s of [...(u.statuses || []), ...traitEffects(u)]) {
         const def = EFFECTS[s.type];
@@ -328,6 +500,7 @@ export function calcDamage(b, attacker, defender, kind, power, rules, rng = Math
     } else {
         dmg = atk - def;
     }
+    dmg *= matchup(b, attacker, defender).dmg / 100;
     const t = terrainAt(b, defender.x, defender.y);
     dmg *= 1 - (Number(t.defBonus) || 0) / 100;
     if (!expected) dmg *= roll(rules, rng);
@@ -350,7 +523,7 @@ export function hitChance(b, attacker, defender, rules, mod = 0) {
     const base = Number(rules.baseHit ?? 90);
     const k = Number(rules.agiFactor ?? 3);
     const avoid = Number(terrainAt(b, defender.x, defender.y).avoid) || 0;
-    const v = base + (stat(attacker, 'agi') - stat(defender, 'agi')) * k + (Number(mod) || 0) - avoid;
+    const v = base + (stat(attacker, 'agi') - stat(defender, 'agi')) * k + (Number(mod) || 0) + matchup(b, attacker, defender).hit - avoid;
     return Math.max(0, Math.min(100, Math.round(v)));
 }
 
@@ -375,8 +548,25 @@ function ref(u) {
     return { uid: u.uid, name: u.name, side: u.side, alias, wbKey: u.wb?.keys?.[0] || '', object: !!u.object, keyTarget: !!u.keyTarget };
 }
 
+// ---------------------------------------------------------------- 对空
+// 战斗规则 airTarget＝antiAir 时（同步为战场的 b.airRule），飞行单位只能被「对空」的普通攻击 / 技能或其他飞行单位打到。
+
+export const AIR_RULES = { all: '可以被任何攻击打到', antiAir: '只能被对空攻击或飞行单位打到' };
+
+/** 这次攻击（skill 为空＝普通攻击 / 反击）能否打到目标 */
+export function canHit(b, attacker, target, skill = null) {
+    if (!b?.airRule || !target?.flying || attacker?.flying) return true;
+    return !!(skill ? skill.antiAir : attacker?.antiAir);
+}
+
+/** 单位有没有任何办法打到目标（用于 AI 选择追击对象） */
+export function canEverHit(b, unit, target) {
+    return canHit(b, unit, target) || (unit.skills || []).some(sk => sk.kind !== 'support' && canHit(b, unit, target, sk));
+}
+
 export function canCounter(b, defender, attacker) {
     if (defender.hp <= 0 || defender.object || defender.noCounter || isStunned(defender)) return false;
+    if (!canHit(b, defender, attacker)) return false;
     const d = dist(defender.x, defender.y, attacker.x, attacker.y);
     return d >= defender.rangeMin && d <= defender.rangeMax;
 }
@@ -425,25 +615,47 @@ export function terrainDamage(b, unit, timing = 'enter') {
     const before = unit.hp;
     unit.hp = Math.max(0, unit.hp - amount);
     if (!unit.hp) unit.acted = true;
-    return { type: 'terrainDamage', turn: b.turn, actor: ref(unit), timing, terrain: t.name, damage: before - unit.hp, hpBefore: before, hpAfter: unit.hp, killed: !unit.hp };
+    return fogTag(b, unit, { type: 'terrainDamage', turn: b.turn, actor: ref(unit), timing, terrain: t.name, damage: before - unit.hp, hpBefore: before, hpAfter: unit.hp, killed: !unit.hp });
 }
 
-export function doMove(b, unit, x, y) {
-    const reach = reachable(b, unit, stat(unit, 'mov'), true);
+/**
+ * 移动。fogView：按玩家看到的局面寻路（战争迷雾中），途中撞上看不见的敌人时遭遇伏击，
+ * 停在前一个能停留的格子，伏击者暴露。
+ */
+export function doMove(b, unit, x, y, { fogView = false } = {}) {
+    const fog = fogView && fogOn(b, team(unit));
+    const reach = reachable(b, unit, stat(unit, 'mov'), true, fog);
     const node = reach.get(`${x},${y}`);
-    if (!node || (unitAt(b, x, y) && unitAt(b, x, y) !== unit)) throw new Error('无法移动到该位置');
+    const occ = unitAt(b, x, y);
+    if (!node || (occ && occ !== unit && !(fog && isFoe(occ, unit) && !visibleTo(b, team(unit), occ)))) throw new Error('无法移动到该位置');
     const from = { x: unit.x, y: unit.y };
-    const path = [];
+    let path = [];
     for (let step = node; step; step = step.prev ? reach.get(step.prev) : null) path.unshift({ x: step.x, y: step.y });
+    let ambush = null;
+    if (fog) {
+        const blocker = path.findIndex((p, i) => i > 0 && unitAt(b, p.x, p.y) && isFoe(unitAt(b, p.x, p.y), unit));
+        if (blocker > 0) {
+            ambush = unitAt(b, path[blocker].x, path[blocker].y);
+            let stop = blocker - 1; // 可以穿过但不能停在友军格子上
+            while (stop > 0 && unitAt(b, path[stop].x, path[stop].y)) stop--;
+            path = path.slice(0, stop + 1);
+            ({ x, y } = path.at(-1));
+            ambush.revealed = true;
+        }
+    }
+    const hidBefore = hiddenFromPlayer(b, unit);
     unit.x = x; unit.y = y;
     unit.moved = true;
-    if (from.x === x && from.y === y) return null;
+    if (from.x === x && from.y === y && !ambush) return null;
+    const hidAfter = hiddenFromPlayer(b, unit);
     return {
         type: 'move', turn: b.turn, actor: ref(unit),
         from, to: { x, y }, path,
         terrain: terrainAt(b, x, y).name,
         fromTerrain: terrainAt(b, from.x, from.y).name,
-        terrainDamage: terrainDamage(b, unit),
+        ...(ambush ? { ambush: ref(ambush) } : {}),
+        ...(hidBefore && hidAfter ? { fog: true } : hidBefore ? { fogIn: true } : hidAfter ? { fogOut: true } : {}),
+        terrainDamage: from.x === x && from.y === y ? null : terrainDamage(b, unit),
     };
 }
 
@@ -451,6 +663,8 @@ export function attackTargets(b, unit, fromX = unit.x, fromY = unit.y) {
     const forced = taunters(b, unit);
     return alive(b).filter(t => {
         if (!isFoe(t, unit) || (forced.length && !forced.includes(t))) return false;
+        if (!visibleTo(b, team(unit), t)) return false; // 战争迷雾：只能攻击看得见的敌人
+        if (!canHit(b, unit, t)) return false; // 对空规则：普通攻击打不到飞行单位
         const d = dist(fromX, fromY, t.x, t.y);
         return d >= unit.rangeMin && d <= unit.rangeMax;
     });
@@ -482,7 +696,7 @@ export function defaultReaction(b, attacker, defender, rules, skill = null, cove
 export function coverFor(b, attacker, target, skill = null) {
     if (!isFoe(attacker, target) || target.hp <= 0) return null;
     if (skill && (skill.kind === 'support' || ['mapLine', 'mapArea'].includes(skill.attackMode) || Number(skill.radius) > 0)) return null;
-    const able = p => p && p !== target && p !== attacker && p.hp > 0 && !p.retreated && !p.object && !isStunned(p) && isFoe(attacker, p);
+    const able = p => p && p !== target && p !== attacker && p.hp > 0 && !p.retreated && !p.object && !isStunned(p) && isFoe(attacker, p) && canHit(b, attacker, p, skill);
     const single = (target.statuses || []).find(s => s.type === 'cover' && able(getUnit(b, s.by)));
     if (single) return { unit: getUnit(b, single.by), status: single };
     const guards = alive(b).filter(p => able(p) && team(p) === team(target)
@@ -503,8 +717,9 @@ function useReaction(b, attacker, defender, rules, reaction, skill = null, cover
     if (reaction === 'counter' && covering) reaction = 'defend'; // 援护者不反击，按防御处理
     if (reaction === 'counter' && !canRespond(b, attacker, defender, rules, skill)) return { reaction: 'none' };
     if (!toughApplies(defender, rules)) return { reaction };
+    // 兵种克制可以让一次招架消耗多点韧性（或不消耗）
     const before = toughLeft(defender);
-    defender.tough = before - 1;
+    defender.tough = Math.max(0, before - matchup(b, attacker, defender).tough);
     return { reaction, tough: [before, defender.tough] };
 }
 
@@ -539,11 +754,14 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
     }
     const forced = taunters(b, unit);
     if (forced.length && !forced.includes(target)) throw new Error(`被嘲讽，只能攻击${forced.map(t => t.name).join('、')}`);
+    if (!canHit(b, unit, target)) throw new Error(`${unit.name}的普通攻击不能对空，打不到飞行单位`);
     // 援护：由援护者承受（命中、伤害、反应都按援护者计算），单体援护用掉即消失
     const cover = coverFor(b, unit, target);
     if (cover?.status) target.statuses = target.statuses.filter(s => s !== cover.status);
     const covered = target;
     if (cover) target = cover.unit;
+    reveal(b, unit, target);
+    const edge = matchup(b, unit, target);
     const used = useReaction(b, unit, target, rules, reaction, null, !!cover);
     reaction = used.reaction;
     const first = reaction === 'counter' && unit.attackOrder === 'last' && target.attackOrder !== 'last' && canCounter(b, target, unit)
@@ -551,6 +769,7 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
     const ev = {
         type: 'attack', turn: b.turn, actor: ref(unit), target: ref(target),
         ...(cover ? { coveredFor: ref(covered) } : {}),
+        ...(isNeutralMatchup(edge) ? {} : { matchup: edge }),
         atkType: unit.atkType,
         ...(unit.hp > 0 ? strike(b, unit, target, unit.atkType, 100, hitChance(b, unit, target, rules), rules, rng, reaction === 'defend') : { hit: false, damage: 0, hpBefore: target.hp, hpAfter: target.hp, killed: false }),
         terrain: terrainAt(b, target.x, target.y).name,
@@ -590,8 +809,10 @@ export function skillAffected(b, unit, skill, tx, ty) {
     const side = skillTargetSide(skill);
     if (side === 'self' || side === 'tile') return unit.hp > 0 ? [unit] : [];
     const area = new Set(skillAreaTiles(b, unit, skill, tx, ty).map(([x, y]) => `${x},${y}`));
+    const hostile = skill.kind !== 'support' || side === 'enemy';
     return alive(b).filter(t => {
         if (!area.has(`${t.x},${t.y}`)) return false;
+        if (hostile && !canHit(b, unit, t, skill)) return false; // 对空规则：不能对空的技能打不到飞行单位（包括误伤）
         if (skill.attackMode === 'mapLine' || skill.attackMode === 'mapArea') return t.uid !== unit.uid && (skill.mapTargets !== 'enemy' || isFoe(t, unit));
         return side === 'ally' ? !isFoe(t, unit) : isFoe(t, unit);
     });
@@ -613,7 +834,8 @@ export function skillTargetTiles(b, unit, skill, fromX = unit.x, fromY = unit.y)
     }) : tilesInRange(b, fromX, fromY, Number(skill.rangeMin) || 0, Number(skill.rangeMax) || 0);
     return tiles
         .filter(([x, y]) => {
-            const aff = skillAffected(b, { ...unit, x: fromX, y: fromY }, skill, x, y);
+            // 战争迷雾：单体技能只能指定看得见的敌人；范围 / MAP 可以朝迷雾里打
+            const aff = skillAffected(b, { ...unit, x: fromX, y: fromY }, skill, x, y).filter(t => visibleTo(b, team(unit), t));
             if (forced.length) return aff.some(t => forced.includes(t));
             if (mapLine || skill.attackMode === 'mapArea') return true;
             if ((Number(skill.radius) || 0) > 0) return true;
@@ -715,7 +937,12 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         teleport.terrainDamage = terrainDamage(b, unit);
     }
     const targets = skillAffected(b, unit, skill, tx, ty);
-    if (!targets.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport) throw new Error('该位置没有可作用的目标');
+    // 战争迷雾中朝看不清的区域施放范围技能时，没有目标也照常消耗（不泄露迷雾中有没有人）
+    const blind = fogOn(b, team(unit)) && Number(skill.radius) > 0 && side === 'enemy';
+    if (!targets.length && !['mapLine', 'mapArea'].includes(skill.attackMode) && !teleport && !blind) throw new Error('该位置没有可作用的目标');
+    // 只在己方之间使用的辅助技能不会暴露位置；看不见时不告诉玩家
+    const hostile = skill.kind !== 'support' || side === 'enemy';
+    const unseen = !hostile && hiddenFromPlayer(b, unit) && targets.every(t => hiddenFromPlayer(b, t));
     // 单体伤害技能可以被援护：改由援护者承受
     const covers = new Map();
     const affected = targets.map(t => {
@@ -730,6 +957,9 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
     const used = Object.fromEntries(affected.map(t => [t.uid, skill.kind === 'support' ? { reaction: 'none' } : useReaction(b, unit, t, rules, responses[t.uid] || 'unset', skill, covers.has(t.uid))]));
     const results = affected.map(t => {
         const r = { target: ref(t), hpBefore: t.hp, terrain: terrainAt(b, t.x, t.y).name, killed: false };
+        if (hostile && isFoe(unit, t)) reveal(b, unit, t);
+        const edge = skill.kind !== 'support' && isFoe(unit, t) ? matchup(b, unit, t) : null;
+        if (!isNeutralMatchup(edge)) r.matchup = edge;
         if (used[t.uid].exhausted) r.exhausted = true;
         if (used[t.uid].endured) r.endured = true;
         if (covers.has(t.uid)) r.coveredFor = ref(covers.get(t.uid));
@@ -771,6 +1001,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         area: skillAreaTiles(b, unit, skill, tx, ty),
         at: { x: tx, y: ty }, results,
         ...(teleport ? { teleport } : {}),
+        ...(unseen ? { fog: true } : {}),
     };
 }
 
@@ -792,7 +1023,7 @@ export function endAction(b, unit) {
 
 export function doWait(b, unit) {
     endAction(b, unit);
-    return { type: 'wait', turn: b.turn, actor: ref(unit), terrain: terrainAt(b, unit.x, unit.y).name };
+    return fogTag(b, unit, { type: 'wait', turn: b.turn, actor: ref(unit), terrain: terrainAt(b, unit.x, unit.y).name });
 }
 
 // ---------------------------------------------------------------- 任务与胜负
@@ -878,6 +1109,7 @@ function setResult(b, r, events) {
 
 function finish(b, events) {
     setResult(b, checkResult(b), events);
+    updateIntel(b);
     return b.result;
 }
 
@@ -924,6 +1156,8 @@ function effectScore(b, caster, t, e, rules) {
     }
     if (hasStatus(t, e.type)) return 0;
     if (e.type === 'stun') return 18;
+    if (e.type === 'reveal') return fogOn(b, team(caster)) ? 5 : 0;
+    if (e.type === 'vision_up' || e.type === 'vision_down') return fogOn(b, e.type === 'vision_up' ? team(t) : team(caster)) ? 4 : 0;
     const foeNear = alive(b).some(f => isFoe(f, t) && !f.object && dist(f.x, f.y, t.x, t.y) <= stat(f, 'mov') + f.rangeMax + 1);
     if (e.type === 'taunt') return foeNear && t.hp / t.maxHp >= 0.5 && !t.object ? 10 : 0;
     if (e.type === 'regen') return missing > 0 ? 5 : 0;
@@ -962,7 +1196,8 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
         // 速攻单独在行动前使用；传送由玩家或 LLM 决定落点，内置 AI 不使用
         if (isQuick(sk) !== (mode === 'quick') || skillTargetSide(sk) === 'tile') continue;
         for (const [tx, ty] of skillTargetTiles(b, unit, sk)) {
-            const aff = skillAffected(b, unit, sk, tx, ty);
+            // 战争迷雾：看不见的敌人不计入估值
+            const aff = skillAffected(b, unit, sk, tx, ty).filter(t => visibleTo(b, team(unit), t));
             let score = 0;
             if (mode !== 'attack') {
                 for (const t of aff) {
@@ -1017,17 +1252,24 @@ export function goalTargets(b, unit) {
     const forced = taunters(b, unit);
     if (forced.length) return forced;
     const type = missionOf(b).type;
-    const foes = alive(b).filter(t => isFoe(t, unit));
-    const preferred = attractionTargets(b, unit);
+    // 只追击打得到的目标（对空规则下，没有对空手段的单位不会去追飞行单位）
+    const foes = knownFoes(b, unit).filter(t => canEverHit(b, unit, t));
+    const preferred = attractionTargets(b, unit).filter(t => canEverHit(b, unit, t));
     const fighters = foes.filter(t => !t.object);
     if (team(unit) === 'E' && type === 'defend') {
         const guards = foes.filter(t => t.keyTarget);
         if (guards.length) return [...new Set([...preferred, ...guards])];
     }
     if (team(unit) === 'P' && type === 'assault') {
-        return [...fighters, ...foes.filter(t => t.object && t.keyTarget)];
+        const goals = [...fighters, ...foes.filter(t => t.object && t.keyTarget)];
+        return goals.length ? goals : searchTargets(b, unit);
     }
-    return [...new Set([...preferred, ...fighters])];
+    return fighters.length || preferred.length ? [...new Set([...preferred, ...fighters])] : searchTargets(b, unit);
+}
+
+/** 战争迷雾中看不到敌人时：前往最后发现敌人的位置搜索（没有情报时原地警戒） */
+function searchTargets(b, unit) {
+    return lastSeen(b, team(unit)).map(g => ({ uid: g.unit.uid, name: `${g.unit.name}的最后发现位置`, x: g.x, y: g.y, ghost: true }));
 }
 
 function fieldDist(b, field, t) {
@@ -1088,12 +1330,12 @@ function tileHazard(b, unit, x, y) {
 }
 
 /** 敌人从 (x,y) 出发、不移动时能用普通攻击或伤害技能打到的格子 */
-function strikeTiles(b, foe, x, y) {
+function strikeTiles(b, foe, x, y, target = null) {
     const keys = new Set();
     const put = ([tx, ty]) => keys.add(`${tx},${ty}`);
-    tilesInRange(b, x, y, foe.rangeMin, foe.rangeMax).forEach(put);
+    if (!target || canHit(b, foe, target)) tilesInRange(b, x, y, foe.rangeMin, foe.rangeMax).forEach(put);
     for (const sk of foe.skills || []) {
-        if (sk.kind === 'support' || !skillUsable(sk)) continue;
+        if (sk.kind === 'support' || !skillUsable(sk) || (target && !canHit(b, foe, target, sk))) continue;
         if (sk.attackMode === 'mapLine') {
             const len = Math.max(1, Math.min(100, Math.floor(Number(sk.lineLength) || 3)));
             for (const [dx, dy] of DIRS) for (let n = 1; n <= len && inBounds(b, x + dx * n, y + dy * n); n++) put([x + dx * n, y + dy * n]);
@@ -1111,15 +1353,15 @@ function strikeTiles(b, foe, x, y) {
  */
 export function threatMap(b, unit, rules) {
     const map = new Map();
-    for (const f of alive(b)) {
-        if (!isFoe(f, unit) || f.object || isStunned(f)) continue;
-        let hit = calcDamage(b, f, unit, f.atkType, 100, rules, Math.random, true);
+    for (const f of knownFoes(b, unit)) {
+        if (f.object || isStunned(f) || !canEverHit(b, f, unit)) continue; // 打不到飞行单位的敌人不构成威胁
+        let hit = canHit(b, f, unit) ? calcDamage(b, f, unit, f.atkType, 100, rules, Math.random, true) : 0;
         for (const sk of f.skills || []) {
-            if (sk.kind !== 'support' && skillUsable(sk)) hit = Math.max(hit, calcDamage(b, f, unit, sk.kind, sk.power, rules, Math.random, true));
+            if (sk.kind !== 'support' && skillUsable(sk) && canHit(b, f, unit, sk)) hit = Math.max(hit, calcDamage(b, f, unit, sk.kind, sk.power, rules, Math.random, true));
         }
         const zone = new Set();
         const from = f.ai === 'stationary' ? [{ x: f.x, y: f.y }] : reachable(b, f, stat(f, 'mov'), true).values();
-        for (const n of from) for (const k of strikeTiles(b, f, n.x, n.y)) zone.add(k);
+        for (const n of from) for (const k of strikeTiles(b, f, n.x, n.y, unit)) zone.add(k);
         for (const k of zone) map.set(k, (map.get(k) || 0) + hit);
     }
     return map;
@@ -1132,7 +1374,7 @@ function dangerOf(b, unit, threat, x, y) {
 /** 逃跑：当前位置安全就不动；否则去危险最小、离敌人最远的格子 */
 export function fleeDestination(b, unit, nodes, rules, threat = threatMap(b, unit, rules)) {
     if (!(threat.get(`${unit.x},${unit.y}`) > 0)) return null;
-    const foes = alive(b).filter(f => isFoe(f, unit) && !f.object);
+    const foes = knownFoes(b, unit).filter(f => !f.object);
     const far = (x, y) => foes.length ? Math.min(...foes.map(f => dist(x, y, f.x, f.y))) : 0;
     let best = null;
     for (const n of nodes) {
@@ -1180,7 +1422,7 @@ function* aiActSteps(b, unit, rules, rng = Math.random) {
     if (unit.hp <= 0 || unit.object || b.result) return events;
     if (isStunned(unit)) {
         unit.acted = true;
-        events.push({ type: 'stunned', turn: b.turn, actor: ref(unit) });
+        events.push(fogTag(b, unit, { type: 'stunned', turn: b.turn, actor: ref(unit) }));
         return events;
     }
     useQuickSkills(b, unit, rules, rng, events);
@@ -1282,6 +1524,7 @@ function startTurnEffects(b, side) {
     for (const u of alive(b).filter(x => x.side === side)) {
         u.phaseX = u.x; u.phaseY = u.y;
         u.tough = toughMax(u);
+        u.revealed = false; // 攻击暴露的位置在己方阶段开始时重新隐入迷雾
         const t = terrainAt(b, u.x, u.y);
         const damage = terrainDamage(b, u, 'turn');
         if (damage) events.push(damage);
@@ -1291,7 +1534,7 @@ function startTurnEffects(b, side) {
             const amount = Math.min(u.maxHp - u.hp, Math.max(1, Math.round(u.maxHp * pct / 100)));
             const before = u.hp;
             u.hp += amount;
-            events.push({ type: 'terrainHeal', turn: b.turn, actor: ref(u), terrain: t.name, heal: amount, hpBefore: before, hpAfter: u.hp });
+            events.push(fogTag(b, u, { type: 'terrainHeal', turn: b.turn, actor: ref(u), terrain: t.name, heal: amount, hpBefore: before, hpAfter: u.hp }));
         }
         for (const e of traitEffects(u)) {
             if (!['regen', 'regen_flat'].includes(e.type) || u.hp >= u.maxHp) continue;
@@ -1300,7 +1543,7 @@ function startTurnEffects(b, side) {
             if (amount <= 0) continue;
             const before = u.hp;
             u.hp = Math.min(u.maxHp, u.hp + amount);
-            events.push({ type: 'dot', turn: b.turn, actor: ref(u), effect: 'regen', label: `特质：${e.traitName}`, hpBefore: before, hpAfter: u.hp });
+            events.push(fogTag(b, u, { type: 'dot', turn: b.turn, actor: ref(u), effect: 'regen', label: `特质：${e.traitName}`, hpBefore: before, hpAfter: u.hp }));
         }
         for (const st of u.statuses || []) {
             const v = Math.max(1, Math.round(u.maxHp * (Number(st.value) || 0) / 100));
@@ -1308,7 +1551,7 @@ function startTurnEffects(b, side) {
             if (st.type === 'regen' && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + v);
             else if (st.type === 'poison' && u.hp > 1) u.hp = Math.max(1, u.hp - v);
             else continue;
-            events.push({ type: 'dot', turn: b.turn, actor: ref(u), effect: st.type, label: EFFECTS[st.type].name, hpBefore: before, hpAfter: u.hp });
+            events.push(fogTag(b, u, { type: 'dot', turn: b.turn, actor: ref(u), effect: st.type, label: EFFECTS[st.type].name, hpBefore: before, hpAfter: u.hp }));
         }
         for (const sk of u.skills || []) if (sk.cdLeft > 0) sk.cdLeft -= 1;
     }
@@ -1322,7 +1565,7 @@ function startTurnEffects(b, side) {
             ended.push(effectLabel(st));
             return false;
         });
-        if (ended.length) events.push({ type: 'statusEnd', turn: b.turn, actor: ref(u), effects: ended });
+        if (ended.length) events.push(fogTag(b, u, { type: 'statusEnd', turn: b.turn, actor: ref(u), effects: ended }));
     }
     return events;
 }
@@ -1551,6 +1794,12 @@ export function unitTough(d) {
     return d.kind === 'object' ? 0 : Number.isFinite(n) && d.tough !== '' && d.tough != null ? Math.max(0, Math.floor(n)) : DEFAULT_TOUGH;
 }
 
+/** 资料卡单位的视野（建筑默认 0，可设为瞭望塔） */
+export function unitVision(d) {
+    const n = Number(d.vision);
+    return d.vision !== '' && d.vision != null && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : d.kind === 'object' ? 0 : DEFAULT_VISION;
+}
+
 export function makeBattleUnit(d, uidStr, name, x, y) {
     const hp = Math.max(1, Number(d.hp) || 1);
     const object = d.kind === 'object';
@@ -1574,6 +1823,9 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
         attackOrder: d.attackOrder === 'last' ? 'last' : 'normal',
         weaponName: d.weaponName || '',
         flying: !object && !!d.flying,
+        antiAir: !object && !!d.antiAir,
+        typeId: d.typeId || '',
+        vision: unitVision(d),
         ai: object ? 'stationary' : d.ai || 'aggressive',
         mapReckless: d.mapReckless !== false,
         toughMax: object ? 0 : unitTough(d),
@@ -1591,7 +1843,12 @@ export function makeBattleUnit(d, uidStr, name, x, y) {
     };
 }
 
-export function createBattle(map, unitDefs, terrainDefs) {
+/** 资料卡兵种 → 战场快照 { id: { name, desc, vs } } */
+export function battleUnitTypes(types = []) {
+    return Object.fromEntries((types || []).filter(t => t?.id).map(t => [t.id, { name: t.name || '未命名兵种', desc: t.desc || '', vs: structuredClone(t.vs || {}) }]));
+}
+
+export function createBattle(map, unitDefs, terrainDefs, unitTypes = []) {
     const defs = new Map(unitDefs.map(u => [u.id, u]));
     const terrains = {};
     for (const t of terrainDefs) terrains[t.id] = structuredClone(t);
@@ -1610,7 +1867,7 @@ export function createBattle(map, unitDefs, terrainDefs) {
         .map(w => ({ ...structuredClone(w), side: defs.get(w.unitId).side }));
     const unitDefs2 = {};
     reinforcements.forEach(w => { unitDefs2[w.unitId] = structuredClone(defs.get(w.unitId)); });
-    return {
+    const b = {
         active: true,
         mapId: map.id,
         mapName: map.name,
@@ -1620,6 +1877,8 @@ export function createBattle(map, unitDefs, terrainDefs) {
         terrains,
         units,
         mission: { type: 'annihilate', turns: 0, ...(map.mission || {}) },
+        fog: { enabled: !!map.fog?.enabled, ai: map.fog?.ai !== false },
+        unitTypes: battleUnitTypes(unitTypes),
         reinforcements,
         unitDefs: unitDefs2,
         reinfFired: {},
@@ -1632,6 +1891,8 @@ export function createBattle(map, unitDefs, terrainDefs) {
         pending: [],
         log: [],
     };
+    initFog(b);
+    return b;
 }
 
 /** 开战前检查任务设置是否完整，返回问题列表 */

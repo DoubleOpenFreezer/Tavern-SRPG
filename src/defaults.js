@@ -8,14 +8,14 @@ export function uid(prefix = 'id') {
 
 export const DEFAULT_TERRAINS = [
     { id: 'plain', name: '平原', symbol: '', color: '#9ccc65', moveCost: 1, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '开阔的草地，视野良好' },
-    { id: 'forest', name: '森林', symbol: '♣', color: '#2e7d32', moveCost: 2, passable: true, flyable: true, avoid: 15, defBonus: 20, healPct: 0, desc: '茂密的树林，便于隐蔽，提高闪避并减少受到的伤害' },
-    { id: 'mountain', name: '山地', symbol: '▲', color: '#8d6e63', moveCost: 3, passable: true, flyable: true, avoid: 20, defBonus: 30, healPct: 0, desc: '崎岖的山岭，难以行进但易守难攻' },
+    { id: 'forest', name: '森林', symbol: '♣', color: '#2e7d32', moveCost: 2, passable: true, flyable: true, avoid: 15, defBonus: 20, healPct: 0, conceal: 1, desc: '茂密的树林，便于隐蔽，提高闪避并减少受到的伤害' },
+    { id: 'mountain', name: '山地', symbol: '▲', color: '#8d6e63', moveCost: 3, passable: true, flyable: true, avoid: 20, defBonus: 30, healPct: 0, visionBonus: 2, desc: '崎岖的山岭，难以行进但易守难攻，登高望远' },
     { id: 'river', name: '河流', symbol: '≈', color: '#42a5f5', moveCost: 1, passable: false, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '湍急的河水，步行无法通过，飞行单位可越过' },
     { id: 'canyon', name: '峡谷', symbol: '▼', color: '#5d4037', moveCost: 1, passable: false, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '深不见底的裂谷，只有飞行单位能跨越' },
     { id: 'bridge', name: '桥梁', symbol: '=', color: '#bcaaa4', moveCost: 1, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, desc: '横跨河流的木桥，兵家必争之地' },
     { id: 'desert', name: '沙地', symbol: '∴', color: '#ffe082', moveCost: 2, passable: true, flyable: true, avoid: -10, defBonus: 0, healPct: 0, desc: '松软的沙地，拖慢行军，难以闪避' },
-    { id: 'fort', name: '堡垒', symbol: '⌂', color: '#b0bec5', moveCost: 1, passable: true, flyable: true, avoid: 10, defBonus: 30, healPct: 10, desc: '坚固的据点，回合开始时恢复10%生命' },
-    { id: 'wall', name: '城墙', symbol: '█', color: '#455a64', moveCost: 1, passable: false, flyable: false, avoid: 0, defBonus: 0, healPct: 0, desc: '高耸的石墙，任何单位都无法通过' },
+    { id: 'fort', name: '堡垒', symbol: '⌂', color: '#b0bec5', moveCost: 1, passable: true, flyable: true, avoid: 10, defBonus: 30, healPct: 10, visionBonus: 1, desc: '坚固的据点，回合开始时恢复10%生命' },
+    { id: 'wall', name: '城墙', symbol: '█', color: '#455a64', moveCost: 1, passable: false, flyable: false, avoid: 0, defBonus: 0, healPct: 0, blockSight: true, desc: '高耸的石墙，任何单位都无法通过' },
     { id: 'lava', name: '熔岩', symbol: '♨', color: '#e64a19', moveCost: 2, passable: true, flyable: true, avoid: 0, defBonus: 0, healPct: 0, enterDamage: 5, enterDamagePct: 0, turnDamage: 0, turnDamagePct: 10, damageFlying: false, desc: '落脚时受到5点伤害；阵营回合开始时损失最大HP的10%，飞行单位免疫' },
 ];
 
@@ -30,11 +30,14 @@ export function makeUnit(over = {}) {
         color: '',
         hp: 20, atk: 8, matk: 4, def: 4, mdef: 3, agi: 5, mov: 5,
         tough: 2, // 韧性：每次防御或反击消耗 1 点，耗尽后只能承受伤害；己方阶段开始时回满
+        vision: 4, // 视野（格）：战争迷雾中能看到多远；建筑默认 0
+        typeId: '', // 兵种（资料卡 unitTypes 中的 id），用于克制关系
         rangeMin: 1, rangeMax: 1,
         atkType: 'physical',
         weaponName: '',
         attackOrder: 'normal', // last：普通攻击时，对能回击的非后手目标让出先攻
         flying: false,
+        antiAir: false, // 普通攻击可以对空：战斗规则开启「对空」时才能打到飞行单位
         ai: 'aggressive',
         mapReckless: true, // 鲁莽使用MAP攻击：AI 不顾误伤友军；关闭后只在打敌人的收益大于误伤时使用
         traits: [], // 常驻特质 [{ id, name, desc, effects }]
@@ -65,6 +68,7 @@ export function makeSkill(over = {}) {
         cooldown: 0, // 冷却回合：N = 每 N 回合可用一次，0 = 无冷却
         hitMod: 0, // 命中修正（±%）
         sureHit: false, // 必中
+        antiAir: false, // 可以对空：战斗规则开启「对空」时才能打到飞行单位
         uses: 0, // 0 = 无限
         effects: [], // 预设效果 [{ type, value, turns }]，type 见 engine.js 的 EFFECTS
         desc: '',
@@ -82,9 +86,30 @@ export function makeMap(over = {}) {
         desc: '',
         placements: [],
         mission: { type: 'annihilate', turns: 0 }, // annihilate 歼灭 / defend 守城 / assault 进攻；turns 见设置说明
+        fog: { enabled: false, ai: true }, // 战争迷雾；ai：敌方 AI 也只知道视野内的单位
         reinforcements: [],
         ...over,
     };
+}
+
+/**
+ * 兵种：vs[防守方兵种 id] = { dmg 伤害倍率%, hit 命中修正, tough 防守方招架时消耗的韧性倍数 }，未设置的组合视为 100% / 0 / ×1
+ */
+export function makeUnitType(over = {}) {
+    return { id: uid('type'), name: '新兵种', desc: '', color: '', vs: {}, ...over };
+}
+
+/** 兵种模板：战士 / 坦克 / 侦察 / 射手 的一套克制关系 */
+export function unitTypePreset() {
+    const warrior = makeUnitType({ name: '战士', desc: '近战主力，擅长贴身压制射手', color: '#e57373' });
+    const tank = makeUnitType({ name: '坦克', desc: '重甲前排，近战难以撼动，但怕远程穿甲', color: '#90a4ae' });
+    const scout = makeUnitType({ name: '侦察', desc: '轻装快速、视野开阔，适合突袭射手，正面打不动坦克', color: '#81c784' });
+    const archer = makeUnitType({ name: '射手', desc: '远程火力，专克轻装单位，被近身就难以招架', color: '#ffb74d' });
+    warrior.vs = { [archer.id]: { dmg: 130, hit: 0, tough: 2 }, [tank.id]: { dmg: 70, hit: 0, tough: 1 } };
+    tank.vs = { [warrior.id]: { dmg: 120, hit: 10, tough: 1 }, [scout.id]: { dmg: 120, hit: 0, tough: 2 } };
+    scout.vs = { [archer.id]: { dmg: 130, hit: 10, tough: 1 }, [tank.id]: { dmg: 60, hit: 0, tough: 1 } };
+    archer.vs = { [scout.id]: { dmg: 130, hit: 15, tough: 1 }, [tank.id]: { dmg: 120, hit: 0, tough: 1 }, [warrior.id]: { dmg: 90, hit: 0, tough: 1 } };
+    return [warrior, tank, scout, archer];
 }
 
 export function makeWave(over = {}) {
@@ -109,14 +134,14 @@ function sampleData() {
         ] });
     const mage = makeUnit({ id: 'unit_sample_mage', name: '法师', side: 'player', icon: '法', hp: 22, atk: 3, matk: 13, def: 3, mdef: 9, agi: 6, mov: 4, rangeMin: 1, rangeMax: 2, atkType: 'magical',
         skills: [
-            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, cooldown: 2, hitMod: 10, desc: '在目标处炸开的火球' }),
+            makeSkill({ id: 'sk_sample_fireball', name: '火球术', kind: 'magical', power: 130, rangeMin: 1, rangeMax: 3, radius: 1, cooldown: 2, hitMod: 10, antiAir: true, desc: '在目标处炸开的火球' }),
             makeSkill({ id: 'sk_sample_heal', name: '治愈', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, cooldown: 1,
                 effects: [{ type: 'heal', value: 120, turns: 0 }], desc: '温暖的治愈之光' }),
             makeSkill({ id: 'sk_sample_guard', name: '守护之光', kind: 'support', target: 'ally', rangeMin: 0, rangeMax: 2, radius: 1, cooldown: 3,
                 effects: [{ type: 'def_up', value: 30, turns: 2 }, { type: 'mdef_up', value: 30, turns: 2 }], desc: '笼罩同伴的金色光幕' }),
         ] });
     const goblin = makeUnit({ id: 'unit_sample_goblin', name: '哥布林', side: 'enemy', icon: '哥', hp: 18, atk: 9, matk: 0, def: 3, mdef: 1, agi: 8, mov: 5 });
-    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, agi: 9, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive',
+    const archer = makeUnit({ id: 'unit_sample_archer', name: '哥布林弓手', side: 'enemy', icon: '弓', hp: 15, atk: 8, matk: 0, def: 2, mdef: 2, agi: 9, mov: 4, rangeMin: 2, rangeMax: 3, ai: 'defensive', antiAir: true,
         skills: [makeSkill({ id: 'sk_sample_poison', name: '毒箭', kind: 'physical', power: 80, rangeMin: 2, rangeMax: 3, cooldown: 3,
             effects: [{ type: 'poison', value: 10, turns: 2 }], desc: '箭头涂着绿色的毒液' })] });
 
@@ -177,7 +202,29 @@ function sampleData() {
         ],
         reinforcements: [makeWave({ id: 'wave_sample_asl', unitId: goblin.id, x: 11, y: 4, count: 1, startTurn: 2, every: 3, times: 2 })] });
 
-    return { units: [knight, mage, goblin, archer, gate, crystal], maps: [map, defend, assault] };
+    // 战争迷雾示例：森林里埋伏着哥布林，斥候视野开阔，负责探路
+    const scout = makeUnit({ id: 'unit_sample_scout', name: '斥候', side: 'player', icon: '斥', hp: 20, atk: 8, matk: 0, def: 3, mdef: 3, agi: 11, mov: 6, vision: 7, tough: 1,
+        skills: [makeSkill({ id: 'sk_sample_flare', name: '照明弹', kind: 'support', target: 'enemy', rangeMin: 1, rangeMax: 5, radius: 1, cooldown: 3, sureHit: true,
+            effects: [{ type: 'reveal', value: 0, turns: 2 }], desc: '向夜空打出一枚照明弹，照亮躲在暗处的敌人' })] });
+    const fw = 12, fh = 8;
+    const ftiles = new Array(fw * fh).fill('plain');
+    const fset = (x, y, t) => { ftiles[y * fw + x] = t; };
+    [[4, 1], [5, 1], [4, 2], [7, 2], [8, 2], [8, 3], [5, 5], [6, 5], [6, 6], [9, 5], [9, 6], [10, 6], [3, 6]].forEach(([x, y]) => fset(x, y, 'forest'));
+    [[10, 1], [11, 1], [11, 2]].forEach(([x, y]) => fset(x, y, 'mountain'));
+    const fogMap = makeMap({ id: 'map_sample_fog', name: '夜袭森林', w: fw, h: fh, tiles: ftiles,
+        desc: '深夜的森林里伸手不见五指，哥布林埋伏在树丛之间，弓手占据了东北的山头。',
+        fog: { enabled: true, ai: true },
+        placements: [
+            { unitId: knight.id, x: 1, y: 3 },
+            { unitId: mage.id, x: 1, y: 4 },
+            { unitId: scout.id, x: 2, y: 5 },
+            { unitId: goblin.id, x: 8, y: 2 },
+            { unitId: goblin.id, x: 6, y: 5 },
+            { unitId: goblin.id, x: 9, y: 6 },
+            { unitId: archer.id, x: 10, y: 1 },
+        ] });
+
+    return { units: [knight, mage, scout, goblin, archer, gate, crystal], maps: [map, defend, assault, fogMap] };
 }
 
 export const DEFAULT_HEADER = '【SRPG 战斗系统】以下行动结果已由战斗系统计算完成，请据此生动地描写战斗过程。严格遵循给出的数值与结果（伤害、击败、位置），不要自行改变或追加判定。';
@@ -194,6 +241,7 @@ export function defaultRules() {
         baseHit: 90, // 基础命中率 %
         agiFactor: 3, // 每 1 点敏捷差影响的命中率 %
         toughness: 'all', // 韧性系统：all 所有单位 ; player 仅我方角色 ; off 关闭（不受约束的 AI 单位只反击、不防御）
+        airTarget: 'all', // 飞行单位：all 可以被任何攻击打到 ; antiAir 只能被对空的普通攻击 / 技能或其他飞行单位打到
     };
 }
 
@@ -204,6 +252,7 @@ export function makeProfile(over = {}) {
         name: '新资料卡',
         desc: '',
         terrains: structuredClone(DEFAULT_TERRAINS),
+        unitTypes: [], // 兵种与克制关系，见 makeUnitType
         units: [],
         maps: [],
         rules: defaultRules(),
@@ -219,14 +268,14 @@ export function sampleProfile() {
     return makeProfile({
         id: SAMPLE_PROFILE_ID,
         name: '示例：哥布林战役',
-        desc: '内置示例：河畔之战（歼灭）、死守城门（守城）、破坏水晶（进攻）。',
+        desc: '内置示例：河畔之战（歼灭）、死守城门（守城）、破坏水晶（进攻）、夜袭森林（战争迷雾）。',
         units: sample.units,
         maps: sample.maps,
     });
 }
 
 /** 资料卡里的内容字段 */
-export const PROFILE_KEYS = ['terrains', 'units', 'maps', 'rules'];
+export const PROFILE_KEYS = ['terrains', 'unitTypes', 'units', 'maps', 'rules'];
 
 export function defaultSettings() {
     return {
@@ -278,6 +327,17 @@ export function defaultSettings() {
             commander: { enemy: false, ally: false },
             options: 6, // 每个单位最多列出几个选项
             intent: true, // 让 LLM 附带一句意图，写进战斗描写
+        },
+        // AI 设计助手：生成地图、单位、地形、兵种（不随「导出全部」导出，避免泄露 API Key）
+        designer: {
+            source: 'st', // st: 当前 SillyTavern 使用的 API ; profile: SillyTavern 的连接配置 ; custom: 自定义 OpenAI 兼容接口
+            profileId: '',
+            custom: { url: 'https://api.openai.com/v1', key: '', model: '', proxy: false },
+            maxTokens: 8000,
+            temperature: 0.8,
+            books: null, // 读取哪些世界书；null＝自动（当前角色、聊天和全局启用的世界书）
+            includeChar: true, // 附带角色卡设定
+            loreChars: 24000, // 世界书内容的字数上限
         },
         ui: {
             layout: 'float', // float: 完整窗口 ; compact: 战斗小窗

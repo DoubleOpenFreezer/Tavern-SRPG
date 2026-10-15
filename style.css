@@ -430,6 +430,46 @@
     .tsrpg-grid3, .tsrpg-grid4, .tsrpg-grid5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .tsrpg-grid6, .tsrpg-grid7 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .tsrpg-tab span { display: none; }
+    .tsrpg-panel .tsrpg-tab, .tsrpg-panel.narrow .tsrpg-tab { padding: 4px 5px; }
+    .tsrpg-panel .tsrpg-title span { display: none; }
     .tsrpg-effect { grid-template-columns: 1fr 1fr; }
     .tsrpg-effect-help { display: none; }
 }
+
+/* 战争迷雾 */
+.tsrpg-cell.m-fog { background-image: repeating-linear-gradient(135deg, rgba(8, 12, 20, 0.66) 0 5px, rgba(8, 12, 20, 0.54) 5px 10px) !important; }
+.tsrpg-cell.m-fog .tsrpg-sym { opacity: 0.22; }
+.tsrpg-token.ghost { opacity: 0.6; filter: grayscale(0.7); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85); outline: 1px dashed rgba(255, 255, 255, 0.9); outline-offset: 1px; }
+
+/* 兵种与克制 */
+.tsrpg-type-badge { display: inline-block; font-size: 0.75em; line-height: 1.5; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
+.tsrpg-vs-table { display: grid; gap: 4px; margin: 4px 0 8px; }
+.tsrpg-vs-row { display: grid; grid-template-columns: minmax(70px, 1.2fr) repeat(3, minmax(0, 1fr)) 34px; gap: 6px; align-items: center; padding: 2px 4px; }
+.tsrpg-vs-row.head { font-size: 0.8em; color: var(--tsrpg-muted); }
+.tsrpg-vs-row.set { background: color-mix(in srgb, var(--tsrpg-accent) 12%, transparent); border-radius: 6px; }
+.tsrpg-vs-row .text_pole { margin: 0; min-width: 0; }
+.tsrpg-matrix-wrap { margin-top: 14px; overflow-x: auto; }
+.tsrpg-matrix { border-collapse: collapse; font-size: 0.85em; }
+.tsrpg-matrix th, .tsrpg-matrix td { border: 1px solid var(--tsrpg-border); padding: 3px 6px; text-align: center; white-space: nowrap; }
+.tsrpg-matrix td { cursor: pointer; }
+.tsrpg-matrix td.adv { background: rgba(229, 115, 115, 0.32); }
+.tsrpg-matrix td.dis { background: rgba(100, 181, 246, 0.28); }
+.tsrpg-matrix td.cur { box-shadow: inset 0 0 0 2px var(--tsrpg-accent); }
+.tsrpg-edge { margin-top: 4px; font-size: 0.85em; color: #ffb74d; }
+.tsrpg-type-user { display: inline-flex; align-items: center; gap: 4px; }
+.tsrpg-type-user .tsrpg-token { width: 22px; height: 22px; font-size: 12px; flex: none; --cell: 28px; }
+
+/* AI 设计 */
+.tsrpg-design-box { border: 1px solid var(--tsrpg-border); border-radius: 6px; padding: 6px 10px; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+details.tsrpg-design-box { display: block; }
+details.tsrpg-design-box[open] > :not(summary) { margin-top: 6px; }
+.tsrpg-design-box > summary { cursor: pointer; }
+.tsrpg-book-list { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 140px; overflow-y: auto; }
+.tsrpg-design-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px; border-radius: 6px; border: 1px solid transparent; }
+.tsrpg-design-item:hover { border-color: var(--tsrpg-border); }
+.tsrpg-design-item > label { padding-top: 3px; cursor: pointer; }
+.tsrpg-design-item.imported { opacity: 0.6; }
+.tsrpg-design-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.tsrpg-design-body .tsrpg-token { width: 22px; height: 22px; font-size: 12px; flex: none; --cell: 28px; }
+.tsrpg-design-body .tsrpg-board .tsrpg-token { width: 80%; height: 80%; font-size: calc(var(--cell) * 0.38); }
+.tsrpg-design-warnings ul { margin: 4px 0 0 18px; padding: 0; font-size: 0.85em; }

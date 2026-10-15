@@ -1,9 +1,10 @@
 // 浮动主面板：标签页切换、拖动、尺寸记忆
 import { h, clear, button } from './dom.js';
 import { renderBattleTab, newBattleUi } from './battle.js';
-import { renderUnitsTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
+import { renderUnitsTab, renderTypesTab, renderTerrainsTab, renderMapsTab, newEditorUi } from './editors.js';
 import { renderSettingsTab } from './settings.js';
 import { renderProfilesTab } from './profiles-tab.js';
+import { renderDesignerTab } from './designer-tab.js';
 import { getProfile } from '../profiles.js';
 import { toast } from './dom.js';
 import { buildBattleContext } from '../context.js';
@@ -15,8 +16,10 @@ const TABS = [
     ['battle', '战场', 'fa-chess-board', renderBattleTab],
     ['profiles', '资料卡', 'fa-address-card', renderProfilesTab],
     ['units', '单位', 'fa-users', renderUnitsTab],
+    ['types', '兵种', 'fa-chess', renderTypesTab],
     ['terrains', '地形', 'fa-mountain-sun', renderTerrainsTab],
     ['maps', '地图', 'fa-map', renderMapsTab],
+    ['design', 'AI 设计', 'fa-wand-magic-sparkles', renderDesignerTab],
     ['settings', '设置', 'fa-gear', renderSettingsTab],
 ];
 

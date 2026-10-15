@@ -1,7 +1,7 @@
 // 设置页：描写模式、发送方式、战斗规则、注入、导入导出
 import { h, add, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
 import { CONTEXT_SECTIONS } from '../context.js';
-import { TOUGH_MODES } from '../engine.js';
+import { TOUGH_MODES, AIR_RULES } from '../engine.js';
 import { MACROS } from '../llm.js';
 import { COMMANDS } from '../commands.js';
 import { getBattle } from '../st.js';
@@ -57,6 +57,8 @@ export function renderSettingsTab(app, root) {
             h('div', checkbox('普通攻击触发反击', app.data.rules.counter, on(app.data.rules, 'counter'), '只控制主动方攻击后的普通反击，不影响后手武器让目标先攻的规则')),
             field('韧性系统', select(Object.entries(TOUGH_MODES), app.data.rules.toughness || 'all', on(app.data.rules, 'toughness')),
                 '韧性：防御或反击消耗1点，耗尽只能承受。「仅我方角色」或「关闭」时，不受韧性约束的敌方 / 友军只在能反击时反击，不会防御；我方关闭韧性后可以不限次数防御或反击'),
+            field('飞行单位', select(Object.entries(AIR_RULES), app.data.rules.airTarget || 'all', on(app.data.rules, 'airTarget')),
+                '「只能被对空攻击打到」时：只有勾选了「对空」的普通攻击（单位）和技能，或者飞行单位自己，才能攻击、反击、范围波及飞行单位。修改后对进行中的战斗立即生效'),
         ),
         h('div.tsrpg-muted', '递减防御：伤害＝攻击 × 威力% × 基准 ÷（基准＋防御）。物理用ATK/DEF，魔法用MATK/MDEF；最后计算地形、伤害浮动和最低伤害。基准12时：防御12减伤50%，防御24减伤约67%。'),
         h('div.tsrpg-grid4',

@@ -210,6 +210,7 @@ export function renderToken(u, selected = false, fx = {}) {
         setTokenPreview(el, u, fx.previewHp);
     }
     if (u.kind === 'object' || u.object) el.classList.add('object');
+    if (u.ghost) el.classList.add('ghost');
     if (u.keyTarget) el.append(h('span.tsrpg-key', { title: '关键目标' }, '★'));
     const st = u.statuses || [];
     if (st.length) {
