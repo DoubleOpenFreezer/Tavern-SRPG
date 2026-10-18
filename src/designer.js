@@ -3,6 +3,8 @@ import { makeUnit, makeSkill, makeMap, makeWave, makeUnitType, makeTrait, uid } 
 import { EFFECTS, TRAIT_EFFECTS, MISSION_NAMES, normalizeSkill, enterCost, validateMission, DEFAULT_VISION } from './engine.js';
 
 export const DESIGN_TASKS = {
+    story: '根据剧情创建关卡',
+    growth: '根据剧情更新单位（成长、新技能、新同伴）',
     battle: '整场战斗（地图＋需要的单位、地形、兵种）',
     map: '地图',
     units: '单位',
@@ -42,7 +44,27 @@ function unitLine(u, types) {
     return `- ${u.name}｜${{ player: '我方', enemy: '敌方', ally: '友军' }[u.side]}${u.kind === 'object' ? '｜建筑' : ''}${type ? `｜兵种：${type}` : ''}｜${stats}${air ? `｜${air}` : ''}${skills ? `｜技能：${skills}` : ''}`;
 }
 
-const SCHEMA = `{
+/** 伤害、命中、效果预设、对空等规则说明（设计与成长共用） */
+export function designRules(rules = {}) {
+    return [
+        `- 伤害：${rules.formula === 'diminishing' || !rules.formula ? `攻击 × 威力% × ${rules.defenseScale || 12} ÷ (${rules.defenseScale || 12} + 防御)，物理用 ATK/DEF，魔法用 MATK/MDEF` : rules.formula === 'ratio' ? '比例公式 a²/(a+防御)' : '攻击 − 防御'}。命中率＝${rules.baseHit ?? 90}% + (攻方AGI − 守方AGI) × ${rules.agiFactor ?? 3}% − 地形闪避。`,
+        '- 韧性 tough：每次防御或反击消耗 1 点；视野 vision：战争迷雾中能看到几格（默认 4，侦察兵 6–8，建筑 0）。',
+        '- 建筑（kind=object，如城门、水晶）只有 hp / def / mdef，不会行动；keyTarget=true 的是关键目标（守城战要保护的我方目标、进攻战要摧毁的敌方目标）。',
+        '- 任务 mission.type：annihilate 歼灭（turns 为回合限制，0 不限）；defend 守城（需要我方关键目标，turns 为坚守回合）；assault 进攻（需要敌方关键目标）。',
+        '- AI 行为 ai：aggressive 主动出击、defensive 原地迎击、stationary 固守不动、ranged 远程游击、flee 逃跑。',
+        '- 技能 kind=support 为辅助，target 决定作用对象（tile＝传送到空地）；伤害技能的 power 为威力百分比。cooldown 为冷却回合。',
+        `- 技能效果 type 只能从以下预设中选：${effectList(EFFECTS)}。`,
+        `- 特质效果 type 只能从以下预设中选：${effectList(TRAIT_EFFECTS)}；属性类效果 flat=true 时为固定值，否则为百分比。`,
+        `- 对空：单位的 antiAir＝普通攻击可以打到飞行单位（弓箭手等），技能的 antiAir＝该技能可以打到飞行单位（火球、箭雨等）。${rules.airTarget === 'antiAir' ? '当前规则：飞行单位只能被对空攻击或其他飞行单位打到，请给远程、对空类单位和技能设置 antiAir，并确保有飞行敌人时我方有对空手段。' : '当前规则下任何攻击都能打到飞行单位，antiAir 只在以后开启对空规则时生效。'}`,
+        '- 兵种克制 vs：dmg 伤害倍率%（100 不变），hit 命中修正%，tough 被攻击方招架时消耗的韧性倍数（默认 1）。',
+        '- 地图坐标 x、y 从 1 开始（x 列从左到右，y 行从上到下）。rows 的每个字符都必须出现在 legend 里，legend 的值是地形名（已有或本次新建的）。',
+        '- 地形属性：moveCost 移动消耗；passable 步行可通过；flyable 飞行可通过；avoid 闪避加成%；defBonus 减伤%；healPct 回合回复%；visionBonus 视野加成；conceal 隐蔽距离（单位只能被这么近的敌人发现）；blockSight 遮挡视线。',
+        '- 单位放在能站立的格子上，不要两个单位放在同一格；我方通常在一侧，敌方在另一侧，留出接敌的空间。',
+        '- wbEntry：如果单位对应世界书里的某个角色或种族条目，写上条目名（与下方世界书标题一致），插件会自动绑定。',
+    ];
+}
+
+export const SCHEMA = `{
   "unitTypes": [{ "name": "兵种名", "desc": "说明", "color": "#rrggbb",
     "vs": [{ "target": "被攻击的兵种名", "dmg": 150, "hit": 10, "tough": 2 }] }],
   "terrains": [{ "name": "地形名", "symbol": "一个字符", "color": "#rrggbb", "moveCost": 1, "passable": true, "flyable": true,
@@ -68,12 +90,24 @@ const SCHEMA = `{
 }`;
 
 const TASK_RULES = {
+    story: '根据「最近的剧情」设计一场接下来要发生的战斗：地点、敌人、我方出场角色、任务目标都要与剧情一致（剧情中在场的我方角色才出场）。输出 1 张地图，以及需要的新单位、新地形和兵种；已有的单位和地形直接用名字引用。地图的 name 用剧情中的地点或事件命名，desc 写清战斗的起因与局势。',
     battle: '设计一场完整的战斗：输出 1 张地图，以及这场战斗需要的新单位（我方、敌方，必要时友军和建筑）、新地形和兵种。已有的单位和地形可以直接用名字引用，不必重复输出。',
     map: '设计 1 张地图（maps 数组只放一张）。',
     units: '设计单位，只输出 units；如果用到了不存在的兵种，可以在 unitTypes 里一并给出。不要输出 maps。',
     terrains: '设计地形，只输出 terrains。',
     types: '设计兵种及它们之间的克制关系，只输出 unitTypes。可以把已有兵种作为 vs 的 target。',
 };
+
+/** 资料卡已有内容的简表 */
+export function existingContent(profile) {
+    const types = profile.unitTypes || [];
+    const out = ['## 资料卡中已有的内容（可以直接用名字引用）'];
+    out.push('地形：', ...(profile.terrains || []).map(terrainLine));
+    if (types.length) out.push('兵种：', ...types.map(t => `- ${t.name}${t.desc ? `：${t.desc}` : ''}`));
+    if ((profile.units || []).length) out.push('单位：', ...profile.units.map(u => unitLine(u, types)));
+    if ((profile.maps || []).length) out.push(`地图：${profile.maps.map(m => `${m.name}（${m.w}×${m.h}，${MISSION_NAMES[m.mission?.type] || '歼灭战'}）`).join('、')}`);
+    return out;
+}
 
 /**
  * @param {object} profile 当前资料卡
@@ -88,7 +122,7 @@ const TASK_RULES = {
  * @param {string} [o.feedback]
  * @returns {{system:string, user:string}}
  */
-export function buildDesignPrompt(profile, { task = 'battle', request = '', size = null, allowNew = true, lore = '', character = '', previous = '', feedback = '' } = {}) {
+export function buildDesignPrompt(profile, { task = 'battle', request = '', size = null, allowNew = true, lore = '', character = '', chat = '', previous = '', feedback = '' } = {}) {
     const types = profile.unitTypes || [];
     const rules = profile.rules || {};
     const system = [
@@ -101,32 +135,16 @@ export function buildDesignPrompt(profile, { task = 'battle', request = '', size
         SCHEMA,
         '',
         '## 规则说明',
-        `- 伤害：${rules.formula === 'diminishing' || !rules.formula ? `攻击 × 威力% × ${rules.defenseScale || 12} ÷ (${rules.defenseScale || 12} + 防御)，物理用 ATK/DEF，魔法用 MATK/MDEF` : rules.formula === 'ratio' ? '比例公式 a²/(a+防御)' : '攻击 − 防御'}。命中率＝${rules.baseHit ?? 90}% + (攻方AGI − 守方AGI) × ${rules.agiFactor ?? 3}% − 地形闪避。`,
-        '- 韧性 tough：每次防御或反击消耗 1 点；视野 vision：战争迷雾中能看到几格（默认 4，侦察兵 6–8，建筑 0）。',
-        '- 建筑（kind=object，如城门、水晶）只有 hp / def / mdef，不会行动；keyTarget=true 的是关键目标（守城战要保护的我方目标、进攻战要摧毁的敌方目标）。',
-        '- 任务 mission.type：annihilate 歼灭（turns 为回合限制，0 不限）；defend 守城（需要我方关键目标，turns 为坚守回合）；assault 进攻（需要敌方关键目标）。',
-        '- AI 行为 ai：aggressive 主动出击、defensive 原地迎击、stationary 固守不动、ranged 远程游击、flee 逃跑。',
-        '- 技能 kind=support 为辅助，target 决定作用对象（tile＝传送到空地）；伤害技能的 power 为威力百分比。cooldown 为冷却回合。',
-        `- 技能效果 type 只能从以下预设中选：${effectList(EFFECTS)}。`,
-        `- 特质效果 type 只能从以下预设中选：${effectList(TRAIT_EFFECTS)}；属性类效果 flat=true 时为固定值，否则为百分比。`,
-        `- 对空：单位的 antiAir＝普通攻击可以打到飞行单位（弓箭手等），技能的 antiAir＝该技能可以打到飞行单位（火球、箭雨等）。${rules.airTarget === 'antiAir' ? '当前规则：飞行单位只能被对空攻击或其他飞行单位打到，请给远程、对空类单位和技能设置 antiAir，并确保有飞行敌人时我方有对空手段。' : '当前规则下任何攻击都能打到飞行单位，antiAir 只在以后开启对空规则时生效。'}`,
-        '- 兵种克制 vs：dmg 伤害倍率%（100 不变），hit 命中修正%，tough 被攻击方招架时消耗的韧性倍数（默认 1）。',
-        '- 地图坐标 x、y 从 1 开始（x 列从左到右，y 行从上到下）。rows 的每个字符都必须出现在 legend 里，legend 的值是地形名（已有或本次新建的）。',
-        '- 地形属性：moveCost 移动消耗；passable 步行可通过；flyable 飞行可通过；avoid 闪避加成%；defBonus 减伤%；healPct 回合回复%；visionBonus 视野加成；conceal 隐蔽距离（单位只能被这么近的敌人发现）；blockSight 遮挡视线。',
-        '- 单位放在能站立的格子上，不要两个单位放在同一格；我方通常在一侧，敌方在另一侧，留出接敌的空间。',
-        '- wbEntry：如果单位对应世界书里的某个角色或种族条目，写上条目名（与下方世界书标题一致），插件会自动绑定。',
+        ...designRules(rules),
     ].join('\n');
 
     const ctx = [];
     if (character) ctx.push('## 角色卡设定', character, '');
     if (lore) ctx.push('## 世界书（世界观设定）', lore, '');
-    ctx.push('## 资料卡中已有的内容（可以直接用名字引用）');
-    ctx.push('地形：', ...(profile.terrains || []).map(terrainLine));
-    if (types.length) ctx.push('兵种：', ...types.map(t => `- ${t.name}${t.desc ? `：${t.desc}` : ''}`));
-    if ((profile.units || []).length) ctx.push('单位：', ...profile.units.map(u => unitLine(u, types)));
-    if ((profile.maps || []).length) ctx.push(`地图：${profile.maps.map(m => `${m.name}（${m.w}×${m.h}，${MISSION_NAMES[m.mission?.type] || '歼灭战'}）`).join('、')}`);
+    if (chat) ctx.push('## 最近的剧情（聊天记录，越靠后越新）', chat, '');
+    ctx.push(...existingContent(profile));
     ctx.push('', '## 本次任务', TASK_RULES[task] || TASK_RULES.battle);
-    if ((task === 'battle' || task === 'map') && size?.w && size?.h) ctx.push(`地图尺寸：宽 ${size.w} × 高 ${size.h}。`);
+    if (['battle', 'map', 'story'].includes(task) && size?.w && size?.h) ctx.push(`地图尺寸：宽 ${size.w} × 高 ${size.h}。`);
     if (task === 'map' && !allowNew) ctx.push('只能使用已有的单位和地形，不要输出 units、terrains、unitTypes。');
     if (task === 'map' && allowNew) ctx.push('如果已有的单位或地形不够用，可以在 units、terrains、unitTypes 中新建。');
     if (request.trim()) ctx.push('', '## 用户的要求', request.trim());
@@ -167,16 +185,16 @@ export function parseDesignReply(text) {
 
 // ---------------------------------------------------------------- 校验与转换
 
-const num = (v, def, min = -Infinity, max = Infinity) => {
+export const num = (v, def, min = -Infinity, max = Infinity) => {
     const n = Number(v);
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
 };
-const int = (v, def, min, max) => Math.round(num(v, def, min, max));
-const str = (v, def = '') => (v == null ? def : String(v)).trim();
-const bool = (v, def = false) => (typeof v === 'boolean' ? v : v == null ? def : ['true', '1', 'yes', '是'].includes(String(v).toLowerCase()));
+export const int = (v, def, min, max) => Math.round(num(v, def, min, max));
+export const str = (v, def = '') => (v == null ? def : String(v)).trim();
+export const bool = (v, def = false) => (typeof v === 'boolean' ? v : v == null ? def : ['true', '1', 'yes', '是'].includes(String(v).toLowerCase()));
 const color = (v, def = '') => /^#[0-9a-f]{6}$/i.test(str(v)) ? str(v) : def;
-const pick = (v, list, def) => list.includes(v) ? v : def;
-const arr = v => Array.isArray(v) ? v : v && typeof v === 'object' ? Object.values(v) : [];
+export const pick = (v, list, def) => list.includes(v) ? v : def;
+export const arr = v => Array.isArray(v) ? v : v && typeof v === 'object' ? Object.values(v) : [];
 
 /** 效果 id：接受 id 或中文名 */
 function effectId(defs, v) {
@@ -266,14 +284,7 @@ export function normalizeDesign(raw, profile, { entries = [] } = {}) {
             weaponName: str(r.weaponName), flying: !object && bool(r.flying), antiAir: !object && bool(r.antiAir), ai: object ? 'stationary' : pick(r.ai, AIS, 'aggressive'),
         });
         if (object) Object.assign(u, { atk: 0, matk: 0, agi: 0, mov: 0, tough: 0 });
-        u.traits = arr(r.traits).map(t => makeTrait({
-            name: str(t?.name, '特质') || '特质', desc: str(t?.desc),
-            effects: arr(t?.effects).map(e => {
-                const type = effectId(TRAIT_EFFECTS, e?.type);
-                if (!type) { warnings.push(`单位「${u.name}」的特质效果「${str(e?.type)}」不是预设效果，已忽略`); return null; }
-                return { type, value: num(e.value, TRAIT_EFFECTS[type].value, 0, 999), ...(TRAIT_EFFECTS[type].stat && !TRAIT_EFFECTS[type].flat && bool(e.flat) ? { flat: true } : {}) };
-            }).filter(Boolean),
-        }));
+        u.traits = arr(r.traits).map(t => traitFrom(t, u, warnings));
         u.skills = object ? [] : arr(r.skills).map(s => skillFrom(s, u, warnings)).filter(Boolean);
         const wanted = str(r.wbEntry);
         const entry = wanted ? entries.find(e => e.label === wanted) || entries.find(e => e.keys?.includes(wanted)) : null;
@@ -289,7 +300,20 @@ export function normalizeDesign(raw, profile, { entries = [] } = {}) {
     return out;
 }
 
-function skillFrom(s, u, warnings) {
+/** 模型给出的特质 → 资料卡特质（只保留预设效果） */
+export function traitFrom(t, u, warnings) {
+    return makeTrait({
+        name: str(t?.name, '特质') || '特质', desc: str(t?.desc),
+        effects: arr(t?.effects).map(e => {
+            const type = effectId(TRAIT_EFFECTS, e?.type);
+            if (!type) { warnings.push(`单位「${u.name}」的特质效果「${str(e?.type)}」不是预设效果，已忽略`); return null; }
+            return { type, value: num(e.value, TRAIT_EFFECTS[type].value, 0, 999), ...(TRAIT_EFFECTS[type].stat && !TRAIT_EFFECTS[type].flat && bool(e.flat) ? { flat: true } : {}) };
+        }).filter(Boolean),
+    });
+}
+
+/** 模型给出的技能 → 资料卡技能（数值校验、只保留预设效果）；无效时返回 null */
+export function skillFrom(s, u, warnings) {
     const name = str(s?.name);
     if (!name) return null;
     const kind = pick(s.kind, ['physical', 'magical', 'support'], 'physical');

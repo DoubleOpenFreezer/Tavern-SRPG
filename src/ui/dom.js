@@ -56,6 +56,27 @@ export function add(parent, ...children) {
     return parent;
 }
 
+/**
+ * 把「分节标题 + 后面的内容」包成卡片（.tsrpg-group），表单不必逐个改结构。
+ * 自带标题的子块（第一个子元素就是分节标题）本身作为一张卡片。
+ */
+export function groupSections(el) {
+    let group = null;
+    for (const child of [...el.children]) {
+        if (child.classList.contains('tsrpg-section-title')) {
+            group = h('section.tsrpg-group');
+            el.insertBefore(group, child);
+            group.append(child);
+        } else if (child.firstElementChild?.classList.contains('tsrpg-section-title')) {
+            child.classList.add('tsrpg-group');
+            group = null;
+        } else if (group) {
+            group.append(child);
+        }
+    }
+    return el;
+}
+
 export function clear(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
     return el;

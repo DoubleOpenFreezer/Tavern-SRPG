@@ -10,6 +10,8 @@ import { toast } from './dom.js';
 import { buildBattleContext } from '../context.js';
 import { commandGuide } from '../commands.js';
 import { alive } from '../engine.js';
+import { storyGuide } from '../story.js';
+import { resumeStory, readyStoryCount } from './story-flow.js';
 import * as ST from '../st.js';
 
 const TABS = [
@@ -260,20 +262,31 @@ export class App {
     /** 悬浮按钮上的提示：LLM 提议的战场变化数量 */
     updateFab() {
         if (!this.fabBadge) return;
-        const n = ST.getBattle()?.llm?.proposals?.cmds?.length || 0;
+        const n = (ST.getBattle()?.llm?.proposals?.cmds?.length || 0) + readyStoryCount();
         this.fabBadge.hidden = !n;
         this.fabBadge.textContent = n ? String(n) : '';
         this.fab.classList.toggle('active', !!ST.getBattle()?.active);
     }
 
-    /** 根据面板宽度决定格子大小（不超过设置中的上限） */
-    cellFor(w, reserve = 0) {
-        const max = this.settings.ui.layout === 'compact' ? Math.min(32, Number(this.settings.ui.cell) || 40) : Number(this.settings.ui.cell) || 40;
-        const avail = (this.body?.clientWidth || 600) - 28;
-        const narrow = this.settings.ui.layout === 'compact' || this.panel?.classList.contains('narrow');
-        // 宽面板时，棋盘旁边还有信息栏 / 列表
+    /**
+     * 根据面板大小决定格子大小（不超过设置中的上限）
+     * @param {number} w 地图宽度（格）
+     * @param {number} reserve 宽面板时棋盘旁边信息栏 / 列表占用的宽度
+     * @param {number} [rows] 地图高度（格）：给出时棋盘高度也不超过可用高度
+     */
+    cellFor(w, reserve = 0, rows = 0) {
+        const compact = this.settings.ui.layout === 'compact';
+        const max = compact ? Math.min(36, Number(this.settings.ui.cell) || 48) : Number(this.settings.ui.cell) || 48;
+        const avail = (this.body?.clientWidth || 600) - 36;
+        const narrow = compact || this.panel?.classList.contains('narrow');
         const room = narrow ? avail : avail - reserve;
-        return Math.max(18, Math.min(max, Math.floor(room / Math.max(1, w)) - 1));
+        let cell = Math.floor(room / Math.max(1, w)) - 1;
+        if (rows && !compact) {
+            // 宽面板：棋盘与信息栏并排，棋盘尽量占满高度；窄面板：棋盘上方还有标题和任务栏
+            const height = (this.body?.clientHeight || 600) - (narrow ? 150 : 120);
+            cell = Math.min(cell, Math.floor(height / Math.max(1, rows)) - 1);
+        }
+        return Math.max(18, Math.min(max, cell));
     }
 
     get isOpenState() {
@@ -337,6 +350,7 @@ export class App {
         this.bs = newBattleUi();
         try {
             await this.syncProfileWithChat();
+            resumeStory(this);
         } catch (err) {
             console.warn('[Tavern-SRPG] 同步资料卡失败', err);
         }
@@ -361,7 +375,16 @@ export class App {
     }
 
     /** 把战场信息注入到提示词中 */
+    /** 剧情联动说明：告诉聊天 LLM 什么时候写 <srpg-story> 标记（不需要进行中的战斗） */
+    updateStoryInjection() {
+        const cfg = this.settings.designer?.story;
+        const profile = ST.boundProfile();
+        const b = ST.getBattle();
+        ST.setStoryInjection(cfg?.enabled && profile ? storyGuide(profile, { battle: cfg.battle, inBattle: !!b?.active }) : '');
+    }
+
     async updateInjection() {
+        this.updateStoryInjection();
         const seq = ++this.injectSeq;
         const s = this.settings;
         const b = ST.getBattle();

@@ -279,7 +279,7 @@ export const PROFILE_KEYS = ['terrains', 'unitTypes', 'units', 'maps', 'rules'];
 
 export function defaultSettings() {
     return {
-        version: 5,
+        version: 6,
         profiles: [sampleProfile()],
         activeProfile: SAMPLE_PROFILE_ID,
         defaultProfile: SAMPLE_PROFILE_ID, // 兼容旧设置，仅作编辑器回退；不启用未绑定聊天
@@ -338,12 +338,21 @@ export function defaultSettings() {
             books: null, // 读取哪些世界书；null＝自动（当前角色、聊天和全局启用的世界书）
             includeChar: true, // 附带角色卡设定
             loreChars: 24000, // 世界书内容的字数上限
+            // 剧情联动：聊天 LLM 在回复末尾写 <srpg-story> 标记，由设计助手生成角色成长或剧情关卡
+            story: {
+                enabled: false,
+                grow: 'confirm', // confirm: 生成后由我确认 ; auto: 生成后自动应用（可撤销）
+                battle: true, // 允许剧情触发关卡
+                chatDepth: 20, // 读取最近几条聊天
+                hideTag: true, // 从聊天消息中移除标记块
+                syncBattle: true, // 成长同时更新进行中战斗里的单位
+            },
         },
         ui: {
             layout: 'float', // float: 完整窗口 ; compact: 战斗小窗
             fab: true, // 显示悬浮按钮
             fabPos: { right: 20, bottom: 140 },
-            cell: 40, // 格子大小上限（会根据面板宽度自动缩小）
+            cell: 48, // 格子大小上限（会根据面板大小自动缩小）
             animate: true,
             actionDelay: 260,
             confirmDefense: true,

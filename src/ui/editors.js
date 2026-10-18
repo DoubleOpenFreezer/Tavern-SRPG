@@ -1,5 +1,5 @@
 // 单位 / 地形 / 地图 编辑器
-import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast } from './dom.js';
+import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast, groupSections } from './dom.js';
 import { makeUnit, makeTrait, makeSkill, makeMap, makeWave, makeUnitType, unitTypePreset, uid, DEFAULT_TERRAINS } from '../defaults.js';
 import { MISSION_NAMES, EFFECTS, TRAIT_EFFECTS, traitSummary, normalizeSkill, matchup, matchupLabel, isNeutralMatchup, battleUnitTypes, blocksSight, DEFAULT_VISION } from '../engine.js';
 import * as ST from '../st.js';
@@ -57,7 +57,7 @@ function unitForm(app, u) {
     const set = (k, rerender = false) => v => { u[k] = v; app.save(); if (rerender) app.render(); };
     const stat = (k, label, opts) => field(label, numInput(u[k], set(k), { min: 0, ...opts }));
 
-    return h('div',
+    return groupSections(h('div',
         h('div.tsrpg-row',
             h('b.tsrpg-form-title', u.name),
             h('div.tsrpg-spacer'),
@@ -76,6 +76,7 @@ function unitForm(app, u) {
                 app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' }),
         ),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-id-card'), ' 基本信息'),
         h('div.tsrpg-grid3',
             field('名称', textInput(u.name, set('name', true))),
             field('阵营', select(SIDES, u.side, set('side', true))),
@@ -96,7 +97,7 @@ function unitForm(app, u) {
             checkbox('★ 关键目标', u.keyTarget, set('keyTarget', true), '守城战：我方/友军的关键目标是敌人进攻的对象，被摧毁即失败；进攻战：敌方的关键目标全部被摧毁即胜利'),
             h('small.tsrpg-muted', u.side === 'enemy' ? '敌方关键目标：进攻战中需要破坏它' : '我方关键目标：守城战中敌人会直奔它，被摧毁即失败'),
         ),
-        h('div.tsrpg-section-title', '基础数值'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-chart-simple'), ' ', '基础数值'),
         u.kind === 'object' ? [h('div.tsrpg-grid7', stat('hp', 'HP', { min: 1 }), stat('def', 'DEF'), stat('mdef', 'MDEF'), field('视野', numInput(u.vision ?? 0, set('vision'), { min: 0 }))),
             h('small.tsrpg-muted', '建筑的视野默认 0；设为大于 0 可以当作瞭望塔，在战争迷雾中为己方提供视野。')] : [
             h('div.tsrpg-grid7',
@@ -125,12 +126,12 @@ function unitForm(app, u) {
                 ? checkbox('鲁莽使用MAP攻击', u.mapReckless !== false, set('mapReckless'), '开启：只要能打到敌人就发射，不顾误伤友军，可以引诱它轰击自己人；关闭：误伤友军的损失大于收益时不使用')
                 : null,
         ],
-        h('div.tsrpg-section-title', '世界书绑定'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-book'), ' ', '世界书绑定'),
         wbBinder(app, u),
         traitEditor(app, u),
         u.kind === 'object' ? null : skillEditor(app, u),
         field('备注', textArea(u.notes, set('notes'), 2, '仅自己可见的备注')),
-    );
+    ));
 }
 
 /** 选择一个特质编辑；同一特质可组合任意多个效果。 */
@@ -147,7 +148,7 @@ function traitEditor(app, u) {
         const t = makeTrait(over); u.traits.push(t); ed.traitId = t.id; save(); app.render();
     };
     return h('div.tsrpg-skill-editor',
-        h('div.tsrpg-section-title', '特质'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-star'), ' ', '特质'),
         h('small.tsrpg-muted', '常驻生效，不消耗行动、不被驱散。多个特质的属性加成相加；描述用于战斗描写，实际效果由下面的组合决定。修改后在新战斗或新摆放的单位上生效。'),
         h('div.tsrpg-row.tsrpg-skill-picker',
             u.traits.length ? field('选择已有特质', select(u.traits.map(t => [t.id, t.name || '未命名特质']), ed.traitId, id => { ed.traitId = id; app.render(); })) : null,
@@ -185,7 +186,7 @@ function skillEditor(app, u) {
     }
     const selected = u.skills.find(sk => sk.id === ed.skillId);
     return h('div.tsrpg-skill-editor',
-        h('div.tsrpg-section-title', '技能'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-wand-sparkles'), ' ', '技能'),
         h('div.tsrpg-row.tsrpg-skill-picker',
             u.skills.length ? field('选择已有技能', select(
                 u.skills.map(sk => [sk.id, sk.name || '未命名技能']), ed.skillId,
@@ -390,7 +391,7 @@ function typeForm(app, t) {
         app.save(); app.render();
     };
     const users = app.data.units.filter(u => u.typeId === t.id);
-    return h('div',
+    return groupSections(h('div',
         h('div.tsrpg-row', h('b.tsrpg-form-title', t.name), h('div.tsrpg-spacer'),
             button('删除', () => {
                 if (!confirm(`删除兵种「${t.name}」？使用它的 ${users.length} 个单位会变为无兵种。`)) return;
@@ -399,13 +400,14 @@ function typeForm(app, t) {
                 for (const u of users) u.typeId = '';
                 app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' })),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-id-card'), ' 基本信息'),
         h('div.tsrpg-grid2',
             field('名称', textInput(t.name, set('name', true))),
             field('标签颜色', h('div.tsrpg-row',
                 h('input', { type: 'color', value: t.color || '#78909c', onchange: e => set('color', true)(e.target.value) }),
                 button('', () => set('color', true)(''), { icon: 'fa-rotate-left', title: '默认颜色' })))),
         field('描述（会告诉 LLM）', textArea(t.desc, set('desc'), 2, '例如：轻装快速、视野开阔，擅长突袭射手')),
-        h('div.tsrpg-section-title', `「${t.name}」攻击其他兵种时`),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-crosshairs'), ` 「${t.name}」攻击其他兵种时`),
         h('small.tsrpg-muted', '伤害倍率：100＝不变，150＝伤害×1.5；命中修正：加在命中率上；韧性消耗倍数：对方每次防御或反击消耗的韧性（默认 1，0＝招架不消耗，2＝一次耗两点）。普通攻击、技能和反击都适用，未设置的组合不受影响。'),
         h('div.tsrpg-vs-table',
             h('div.tsrpg-vs-row.head', h('span', '防守方'), VS_FIELDS.map(([, label]) => h('span', label)), h('span', '')),
@@ -416,16 +418,16 @@ function typeForm(app, t) {
                     VS_FIELDS.map(([key, , , opts]) => numInput(m[key], edit(d, key), opts)),
                     isNeutralMatchup(m) ? h('small.tsrpg-muted', { title: '无克制' }, '—') : button('', () => { delete t.vs[d.id]; app.save(); app.render(); }, { icon: 'fa-rotate-left', title: '恢复为无克制' }));
             })),
-        h('div.tsrpg-section-title', `其他兵种攻击「${t.name}」时`),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-shield-halved'), ` 其他兵种攻击「${t.name}」时`),
         types.map(a => {
             const label = matchupLabel(matchup(snapshot, { typeId: a.id }, { typeId: t.id }));
             return label ? h('div.tsrpg-row', typeBadge(a), h('span', `→ ${t.name}：${label}`)) : null;
         }),
         types.some(a => !isNeutralMatchup(matchup(snapshot, { typeId: a.id }, { typeId: t.id }))) ? null : h('div.tsrpg-muted', '没有兵种克制它。'),
-        h('div.tsrpg-section-title', '使用这个兵种的单位'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-users'), ' 使用这个兵种的单位'),
         users.length ? h('div.tsrpg-row', users.map(u => h('a.tsrpg-link.tsrpg-type-user', { onclick: () => { app.ed.unitId = u.id; app.setTab('units'); } }, renderToken({ ...u, maxHp: 0 }), ` ${u.name}`)))
             : h('div.tsrpg-muted', '还没有单位使用。在「单位」页选择兵种。'),
-    );
+    ));
 }
 
 /** 克制总览：行＝攻击方，列＝防守方，格子显示伤害倍率（悬停看完整设置） */
@@ -474,7 +476,7 @@ export function renderTerrainsTab(app, root) {
 function terrainForm(app, t) {
     const s = app.settings;
     const set = (k, rerender = false) => v => { t[k] = v; app.save(); if (rerender) app.render(); };
-    return h('div',
+    return groupSections(h('div',
         h('div.tsrpg-row', h('b.tsrpg-form-title', t.name), h('div.tsrpg-spacer'),
             button('删除', () => {
                 if (app.data.terrains.length <= 1) return toast('warning', '至少保留一种地形');
@@ -484,6 +486,7 @@ function terrainForm(app, t) {
                 app.data.maps.forEach(m => { m.tiles = m.tiles.map(id => id === t.id ? fallback.id : id); });
                 app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' })),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-mountain-sun'), ' 基本属性'),
         h('div.tsrpg-grid3',
             field('名称', textInput(t.name, set('name', true))),
             field('符号', textInput(t.symbol, set('symbol', true), '如 ♣ ≈ ▲')),
@@ -499,7 +502,7 @@ function terrainForm(app, t) {
             checkbox('步行可通过', t.passable, set('passable')),
             checkbox('飞行可通过', t.flyable, set('flyable')),
         ),
-        h('div.tsrpg-section-title', '地形伤害'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-fire'), ' ', '地形伤害'),
         h('div.tsrpg-grid4',
             field('落脚扣血', numInput(t.enterDamage ?? 0, set('enterDamage'), { min: 0 }), '移动终点落在此格时扣除固定HP'),
             field('落脚扣血 %', numInput(t.enterDamagePct ?? 0, set('enterDamagePct'), { min: 0, max: 100 }), '按最大HP计算，与固定伤害相加'),
@@ -508,14 +511,14 @@ function terrainForm(app, t) {
         ),
         checkbox('地形伤害也影响飞行单位', t.damageFlying ?? false, set('damageFlying')),
         h('small.tsrpg-muted', '地形伤害可致死，不受防御减免；只结算落脚格，不计算沿途经过的格子。'),
-        h('div.tsrpg-section-title', '视野（战争迷雾）'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-eye'), ' ', '视野（战争迷雾）'),
         h('div.tsrpg-grid3',
             field('视野加成', numInput(t.visionBonus ?? 0, set('visionBonus'), { min: -10, max: 10 }), '站在此格的单位视野增减（格），例如山地 +2'),
             field('隐蔽距离', numInput(t.conceal ?? 0, set('conceal'), { min: 0, max: 20 }), '站在此格的单位只能被这么近的敌人发现；0＝不隐蔽，1＝只有相邻才能发现。飞行单位不受隐蔽'),
             h('div', checkbox('遮挡视线', blocksSight(t), set('blockSight'), '视线无法穿过此格（例如城墙）'))),
         h('small.tsrpg-muted', '只在开启了战争迷雾的地图上生效。'),
         field('描述（会告诉 LLM）', textArea(t.desc, set('desc'), 2, '例如：湍急的河流，水声隆隆')),
-    );
+    ));
 }
 
 // ================================================================ 地图
@@ -570,14 +573,15 @@ function guardCount(app, m) {
 function fogEditor(app, m) {
     m.fog ||= { enabled: false, ai: true };
     const set = k => v => { m.fog[k] = v; app.save(); app.render(); };
-    return h('div',
-        h('div.tsrpg-section-title', '战争迷雾'),
+    // 返回数组：由外层表单分组成卡片
+    return [
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-smog'), ' 战争迷雾'),
         h('div.tsrpg-row',
             checkbox('开启战争迷雾', m.fog.enabled, set('enabled')),
             m.fog.enabled ? checkbox('敌方 AI 也受迷雾限制', m.fog.ai !== false, set('ai'), '开启：敌人只追踪看得见的我方单位，看不到时前往最后发现的位置搜索；关闭：敌人知道所有我方单位的位置') : null),
         h('small.tsrpg-muted', m.fog.enabled
             ? '我方与友军共享视野，只能看到视野内的敌人（单位的「视野」属性、地形的视野加成 / 隐蔽 / 遮挡视线）。地形始终可见。看不见的敌人不能被选为攻击或单体技能目标，移动途中撞上会遭遇伏击；攻击会暴露位置直到对方下一阶段开始。LLM 也只会读到我方看得见的敌人。'
-            : '开启后，只能看到己方视野内的敌人，侦察、埋伏和照明会变得重要。'));
+            : '开启后，只能看到己方视野内的敌人，侦察、埋伏和照明会变得重要。')];
 }
 
 function missionEditor(app, m) {
@@ -586,8 +590,8 @@ function missionEditor(app, m) {
     const [label, hint] = TURNS_LABEL[ms.type] || TURNS_LABEL.annihilate;
     const unitOpts = app.data.units.map(u => [u.id, `${u.name}（${SIDES.find(x => x[0] === u.side)?.[1]}）`]);
     const num = (w, k, min = 0, offset = 0) => numInput((Number(w[k]) || 0) + offset, v => { w[k] = Math.max(min, v - offset); app.save(); app.render(); }, { min: min + offset });
-    return h('div',
-        h('div.tsrpg-section-title', '任务'),
+    return [
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-bullseye'), ' 任务'),
         h('div.tsrpg-grid3',
             field('任务类型', select(Object.entries(MISSION_NAMES), ms.type, v => { ms.type = v; app.save(); app.render(); })),
             field(label, numInput(ms.turns, v => { ms.turns = Math.max(0, v); app.save(); }, { min: 0 }), hint),
@@ -596,7 +600,7 @@ function missionEditor(app, m) {
         ),
         h('div.tsrpg-muted', MISSION_HELP[ms.type]),
         fogEditor(app, m),
-        h('div.tsrpg-section-title', '增援', h('div.tsrpg-spacer'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-people-group'), ' 增援', h('div.tsrpg-spacer'),
             button('添加增援', () => {
                 m.reinforcements.push(makeWave({ unitId: app.data.units.find(u => u.side === 'enemy')?.id || app.data.units[0]?.id, x: m.w - 1, y: Math.floor(m.h / 2) }));
                 app.save(); app.render();
@@ -615,7 +619,7 @@ function missionEditor(app, m) {
                 h('div.tsrpg-row', button('删除', () => { m.reinforcements.splice(m.reinforcements.indexOf(w), 1); app.save(); app.render(); }, { icon: 'fa-trash', cls: 'danger' })),
             ),
         )) : h('div.tsrpg-muted', '没有增援。可以点「添加增援」，或用上方的「增援点」工具直接在地图上点选位置。'),
-    );
+    ];
 }
 
 function mapForm(app, m) {
@@ -685,7 +689,7 @@ function mapForm(app, m) {
     const sizeW = numInput(m.w, () => {}, { min: 3, max: 40 });
     const sizeH = numInput(m.h, () => {}, { min: 3, max: 40 });
 
-    return h('div',
+    return groupSections(h('div',
         h('div.tsrpg-row', h('b.tsrpg-form-title', m.name), h('div.tsrpg-spacer'),
             button('复制', () => {
                 const c = structuredClone(m); c.id = uid('map'); c.name += '·副本';
@@ -695,12 +699,14 @@ function mapForm(app, m) {
                 if (!confirm(`删除地图「${m.name}」？`)) return;
                 app.data.maps.splice(app.data.maps.indexOf(m), 1); app.save(); app.render();
             }, { icon: 'fa-trash', cls: 'danger' })),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-id-card'), ' 基本信息'),
         h('div.tsrpg-grid3',
             field('名称', textInput(m.name, set('name', true))),
             field('尺寸（宽×高）', h('div.tsrpg-row', sizeW, '×', sizeH,
                 button('应用', () => { resizeMap(m, +sizeW.value, +sizeH.value, ed.brush); app.save(); app.render(); }, { icon: 'fa-check' }))),
         ),
         field('地图描述（会告诉 LLM）', textArea(m.desc, set('desc'), 2, '例如：一条河流将平原一分为二……')),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-chess-board'), ' 地形与单位'),
         h('div.tsrpg-row.tsrpg-toolbar',
             toolBtn('paint', '画地形', 'fa-paintbrush'),
             toolBtn('place', '放置单位', 'fa-chess-pawn'),
@@ -722,5 +728,5 @@ function mapForm(app, m) {
             : '提示：按住鼠标拖动可连续绘制地形；右键格子可移除单位。同一单位可放置多次（自动编号 A、B、C…）。'),
         h('div.tsrpg-board-wrap', board),
         missionEditor(app, m),
-    );
+    ));
 }

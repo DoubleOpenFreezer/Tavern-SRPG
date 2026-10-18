@@ -56,7 +56,7 @@ function renderPaused(app, root, b) {
     add(root, h('div.tsrpg-mission', `战斗已暂停：${b.mapName} · 第 ${b.turn} 回合 · ${PHASE[b.phase] || b.phase}`),
         h('div.tsrpg-muted', '棋盘、HP、技能冷却及待发送行动已保留。暂停期间不注入战场信息、不处理剧情指令；关闭窗口或刷新后仍可继续。'),
         h('div.tsrpg-row', button('继续战斗', () => setBattlePaused(app, b, false), { icon: 'fa-play', cls: 'primary' })),
-        h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b).filter(u => E.visibleTo(b, 'P', u)), marks: fogMarks(b) })));
+        h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312, b.h), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b).filter(u => E.visibleTo(b, 'P', u)), marks: fogMarks(b) })));
 }
 
 // ---------------------------------------------------------------- 开战准备
@@ -112,7 +112,7 @@ function renderSetup(app, root) {
     );
 }
 
-function startBattle(app, map) {
+export function startBattle(app, map) {
     if (ST.boundProfile()?.id !== app.data.id) return toast('warning', '请先使用当前聊天绑定的资料卡。');
     const s = app.settings;
     const problems = E.validateMission(map, app.data.units);
@@ -450,7 +450,7 @@ function unitCard(b, u, compact = false, rules = null) {
     const t = E.terrainAt(b, u.x, u.y);
     const pct = Math.round((u.hp / u.maxHp) * 100);
     return h(`div.tsrpg-card.side-${u.side}`,
-        h('div.tsrpg-card-title', h('b', u.name), h('span.tsrpg-tag', E.SIDE_NAMES[u.side]),
+        h('div.tsrpg-card-title', renderToken(u), h('b', u.name), h('span.tsrpg-tag', E.SIDE_NAMES[u.side]),
             E.unitTypeName(b, u) ? h('span.tsrpg-tag', { title: b.unitTypes[u.typeId].desc || '' }, E.unitTypeName(b, u)) : null,
             u.object ? h('span.tsrpg-tag', '建筑') : null,
             u.keyTarget ? h('span.tsrpg-tag.key', '★ 关键目标') : null,
@@ -584,7 +584,7 @@ function renderActive(app, root, b) {
     const shown = (ui.playback ? b.units.filter(x => (x.hp > 0 && !x.retreated) || ui.playback.effects?.some(e => e.uid === x.uid && e.ko)) : E.alive(b))
         .filter(x => !fogView(b, ui) || E.visibleTo(b, 'P', x) || ui.playback?.effects?.some(e => e.uid === x.uid && e.ko));
     refs.board = renderBoard({
-        w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312),
+        w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312, b.h),
         terrain: id => b.terrains[id] || { name: id, color: '#999' },
         units: [...shown, ...ghostTokens(b, ui, shown)],
         marks: computeMarks(b, ui),
@@ -599,10 +599,13 @@ function renderActive(app, root, b) {
 
     if (s.ui.layout === 'compact') {
         add(root,
-            h('div.tsrpg-row.tsrpg-topbar', h('b', `第 ${b.turn} 回合`), status,
-                button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy }),
-                button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
-                quietTurnButton(app, b), pauseButton(app, b)),
+            h('div.tsrpg-topbar',
+                h('div.tsrpg-topbar-info', h('b', `第 ${b.turn} 回合`), status),
+                h('div.tsrpg-btn-group',
+                    button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy, title: '撤销上一步操作' }),
+                    button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
+                    quietTurnButton(app, b)),
+                h('div.tsrpg-btn-group.tools', pauseButton(app, b))),
             h('div.tsrpg-board-wrap', refs.board),
             processStatus(app),
             u ? h('div.tsrpg-mini-unit', renderToken(u), h('b', u.name), hpForecast(u, u.hp),
@@ -633,19 +636,22 @@ function renderActive(app, root, b) {
     const sendLabel = { send: '发送给 LLM', fill: '填入输入框', preview: '预览并发送' }[s.send.mode];
 
     add(root,
-        h('div.tsrpg-row.tsrpg-topbar',
-            h('b', b.mapName), h('span', `第 ${b.turn} 回合`), status,
-            b.fog?.enabled ? h('span.tsrpg-tag', { title: E.fogOn(b, 'E') ? '战争迷雾：双方都只能看到视野内的敌人' : '战争迷雾：我方只能看到视野内的敌人' }, h('i.fa-solid.fa-smog'), ' 迷雾') : null,
-            b.phase === 'player' && !b.result ? h('span.tsrpg-muted', `待行动 ${left}`) : null,
-            h('div.tsrpg-spacer'),
-            button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy, title: '撤销上一步操作' }),
-            button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
-            quietTurnButton(app, b),
-            pauseButton(app, b),
-            rewindButton(app, b),
-            manualToggle(app),
-            button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
-            button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' }),
+        h('div.tsrpg-topbar',
+            h('div.tsrpg-topbar-info',
+                h('b.tsrpg-map-name', b.mapName), h('span.tsrpg-turn', `第 ${b.turn} 回合`), status,
+                b.fog?.enabled ? h('span.tsrpg-tag', { title: E.fogOn(b, 'E') ? '战争迷雾：双方都只能看到视野内的敌人' : '战争迷雾：我方只能看到视野内的敌人' }, h('i.fa-solid.fa-smog'), ' 迷雾') : null,
+                b.phase === 'player' && !b.result ? h('span.tsrpg-muted', `待行动 ${left}`) : null),
+            h('div.tsrpg-btn-group',
+                button('撤销', () => undo(app), { icon: 'fa-rotate-left', disabled: !ui.undo.length || !!ui.busy, title: '撤销上一步操作' }),
+                button('结束回合', () => endTurn(app, b), { icon: 'fa-forward', cls: 'primary', disabled: !!b.result || b.phase !== 'player' || !!ui.busy }),
+                quietTurnButton(app, b)),
+            // 不常用的操作只显示图标（悬停查看说明）
+            h('div.tsrpg-btn-group.tools',
+                pauseButton(app, b),
+                rewindButton(app, b),
+                manualToggle(app),
+                button('', () => textDialog(app.panel, 'LLM 看到的战场信息', app.battleContext(), { note: '自动注入与 {{srpg}} 宏的内容。可在「设置 → LLM 读取战场」中调整。' }), { icon: 'fa-eye', title: '查看 LLM 看到的战场信息' }),
+                button('', () => endBattle(app), { icon: 'fa-flag-checkered', title: '结束 / 放弃战斗' })),
         ),
         h('div.tsrpg-mission',
             h('i.fa-solid.fa-bullseye'), ' ', b.result ? `${b.result === 'victory' ? '胜利' : '战败'}：${b.resultReason || ''}` : missionText(b),
@@ -655,19 +661,19 @@ function renderActive(app, root, b) {
             h('div.tsrpg-side',
                 processStatus(app),
                 ui.busy ? null : proposalPanel(app, b),
-                u ? unitCard(b, u, false, app.data.rules) : h('div.tsrpg-muted', '点击我方单位选择，右键取消。红色区域为可攻击范围。'),
+                u ? unitCard(b, u, false, app.data.rules) : h('div.tsrpg-side-hint', h('i.fa-solid.fa-hand-pointer'), ' 点击我方单位选择，右键取消。悬停查看地形与敌人。'),
                 ui.busy ? null : ui.cheat ? manualPanel(app, b) : ui.engagement ? engagementPanel(app, b) : actionPanel(app, b, u),
                 refs.preview,
                 refs.hoverInfo,
-                h('div.tsrpg-section-title', '待发送的行动', h('small.tsrpg-muted', '（灰色＝按设置不描写）')),
-                pendingList,
-                noteBox,
-                h('div.tsrpg-row',
-                    button(sendLabel, () => dispatch(app, b), { icon: 'fa-paper-plane', cls: 'primary' }),
-                    button('清空', () => { b.pending = []; ST.saveBattle(); app.render(); }, { icon: 'fa-eraser', disabled: !b.pending.length || !!ui.busy, title: '丢弃待发送的行动（棋盘不变）' }),
-                ),
-                h('details.tsrpg-log', { open: ui.showLog, ontoggle: e => { ui.showLog = e.target.open; } },
-                    h('summary', `战斗记录（${b.log.length}）`),
+                h('div.tsrpg-side-card',
+                    h('div.tsrpg-section-title', h('i.fa-solid.fa-scroll'), ' 待发送的行动', h('small.tsrpg-muted', `${pending.length ? ` ${pending.length} 条` : ''}（灰色＝按设置不描写）`)),
+                    pendingList,
+                    noteBox,
+                    h('div.tsrpg-row',
+                        button(sendLabel, () => dispatch(app, b), { icon: 'fa-paper-plane', cls: 'primary' }),
+                        button('清空', () => { b.pending = []; ST.saveBattle(); app.render(); }, { icon: 'fa-eraser', disabled: !b.pending.length || !!ui.busy, title: '丢弃待发送的行动（棋盘不变）' }))),
+                h('details.tsrpg-log.tsrpg-side-card', { open: ui.showLog, ontoggle: e => { ui.showLog = e.target.open; } },
+                    h('summary', h('i.fa-solid.fa-book'), ` 战斗记录（${b.log.length}）`),
                     h('div.tsrpg-events', b.log.slice(-80).map(l => h('div.tsrpg-event', l)))),
             ),
         ),
@@ -776,7 +782,7 @@ function engagementPanel(app, b) {
     const targets = actor ? skill ? shownTargets(b, app.bs, E.skillAffected(b, actor, skill, plan.x, plan.y)) : target ? [target] : [] : [];
     const covered = t => actor && E.coverFor(b, actor, t, skill);
     return h('div.tsrpg-engagement',
-        h('div.tsrpg-section-title', '战斗确认'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-khanda'), ' 战斗确认'),
         h('b', `${actor?.name || '单位'} → ${skill ? skill.name : target?.name || '目标'}`),
         skill ? h('small.tsrpg-muted', skillSummary(skill)) : null,
         targets.length > 1 ? multiForecast(b, actor, skill, targets, app.data.rules) : targets.map(t => {
@@ -918,7 +924,7 @@ function manualToggle(app) {
         app.bs.engagement = null;
         app.bs.mode = 'idle'; app.bs.sel = null;
         app.render();
-    }, { icon: 'fa-wrench', cls: app.bs.cheat ? 'active' : '', disabled: !!app.bs.busy });
+    }, { icon: 'fa-wrench', cls: app.bs.cheat ? 'active' : '', disabled: !!app.bs.busy, title: app.bs.cheat ? '退出手动修改' : '手动修改：放置 / 撤除 / 移动单位、调整数值、改地形' });
 }
 
 function manualChange(app, b, change) {

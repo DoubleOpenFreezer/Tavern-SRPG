@@ -3,6 +3,7 @@ import { App } from './src/ui/panel.js';
 import { ctx } from './src/st.js';
 import { registerMacros, registerTool } from './src/llm.js';
 import { handleMessage, revertMessage, handleDeleted } from './src/ui/llm-flow.js';
+import { handleStoryMessage, handleStoryDeleted } from './src/ui/story-flow.js';
 import { installBattleMessageFolding } from './src/ui/chat-messages.js';
 
 const app = new App();
@@ -74,9 +75,13 @@ jQuery(async () => {
     eventSource.on(eventTypes.CHAT_CHANGED, () => app.onChatChanged());
     // LLM 回复中的战场指令；重新生成 / 滑动 / 删除时撤回该回复造成的改动
     const guard = fn => (...args) => Promise.resolve(fn(...args)).catch(err => console.error('[Tavern-SRPG]', err));
-    eventSource.on(eventTypes.MESSAGE_RECEIVED, guard((id, type) => handleMessage(app, Number(id), type)));
+    // 先处理战场指令，再处理剧情联动标记（两者都会改写消息正文，按顺序执行）
+    eventSource.on(eventTypes.MESSAGE_RECEIVED, guard(async (id, type) => {
+        await handleMessage(app, Number(id), type);
+        await handleStoryMessage(app, Number(id), type);
+    }));
     if (eventTypes.MESSAGE_SWIPED) eventSource.on(eventTypes.MESSAGE_SWIPED, guard(id => revertMessage(app, Number(id))));
-    if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, guard(() => handleDeleted(app)));
+    if (eventTypes.MESSAGE_DELETED) eventSource.on(eventTypes.MESSAGE_DELETED, guard(() => { handleDeleted(app); handleStoryDeleted(app); }));
     // 生成前再同步一次，确保注入的是最新战况
     if (eventTypes.GENERATION_STARTED) {
         eventSource.on(eventTypes.GENERATION_STARTED, () => app.updateInjection());

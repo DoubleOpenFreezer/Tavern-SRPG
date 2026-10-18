@@ -27,7 +27,9 @@ export function getSettings() {
         mergeDefaults(st, defaultSettings());
         for (const p of st.profiles) normalizeProfile(p);
         if (previousVersion < 5) upgradeCombatRules(st);
-        st.version = 5;
+        // v0.24：棋盘会按可用高度缩放，旧默认的格子上限 40 提高到新默认 48
+        if (previousVersion < 6 && Number(st.ui?.cell) === 40) st.ui.cell = 48;
+        st.version = 6;
         Object.defineProperty(st, '_merged', { value: true, enumerable: false });
     }
     return all[MODULE_NAME];
@@ -365,6 +367,12 @@ export function chatLength() {
 /** 改写一条消息的正文（同时改写当前 swipe）并保存聊天 */
 export async function rewriteMessage(id, text) {
     if (!isBattleRunning()) return;
+    await rewriteChatMessage(id, text);
+}
+
+/** 同上，但不要求有进行中的战斗（剧情联动在战斗之外也会用到） */
+export async function rewriteChatMessage(id, text) {
+    if (!isEnabledForChat()) return;
     const c = ctx();
     const msg = c.chat?.[id];
     if (!msg) return;
@@ -385,6 +393,46 @@ export async function quietGenerate(prompt) {
     if (typeof fn !== 'function') throw new Error('当前 SillyTavern 版本不支持后台生成（generateQuietPrompt）');
     const res = fn.length === 0 ? await fn({ quietPrompt: prompt }) : await fn(prompt, false, false);
     return String(res ?? '');
+}
+
+/** 最近的剧情：聊天记录到 upTo 楼（含）为止，去掉插件标记，超长时只保留较新的部分 */
+export function recentChat(count = 20, upTo = null, maxChars = 16000) {
+    const chat = ctx().chat || [];
+    const end = upTo == null ? chat.length : Math.min(chat.length, upTo + 1);
+    const lines = chat.slice(Math.max(0, end - count), end).filter(m => m && !m.is_system && m.mes).map(m => {
+        const text = String(m.mes).replace(/<srpg(-story)?>[\s\S]*?<\/srpg(-story)?>/gi, '').trim();
+        return `${m.name || (m.is_user ? '用户' : '角色')}：${text.length > 2000 ? `${text.slice(0, 2000)}……` : text}`;
+    });
+    let out = lines.join('\n\n');
+    if (out.length > maxChars) out = `……${out.slice(-maxChars)}`;
+    return substitute(out);
+}
+
+const STORY_INJECT_KEY = 'tavern_srpg_story';
+const STORY_META = 'tavern_srpg_story';
+
+/** 剧情联动的说明（不需要进行中的战斗） */
+export function setStoryInjection(text) {
+    const c = ctx();
+    if (typeof c.setExtensionPrompt !== 'function') return;
+    if (text && !isEnabledForChat()) text = '';
+    c.setExtensionPrompt(STORY_INJECT_KEY, text ? substitute(text) : '', POSITIONS.chat, 1, false, ROLES.system);
+}
+
+/** 当前聊天的剧情提议（保存在聊天元数据里） */
+export function getStory(create = false) {
+    if (!isEnabledForChat()) return null;
+    const meta = ctx().chatMetadata;
+    if (!meta) return null;
+    if (!meta[STORY_META] && create) meta[STORY_META] = { items: [] };
+    return meta[STORY_META] || null;
+}
+
+export function saveStory() {
+    if (!isEnabledForChat()) return;
+    const c = ctx();
+    if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
+    else c.saveMetadata?.();
 }
 
 // ---------------------------------------------------------------- 当前角色 / 群组（用于绑定资料卡）

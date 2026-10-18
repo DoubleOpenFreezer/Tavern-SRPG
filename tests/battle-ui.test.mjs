@@ -18,13 +18,21 @@ class TestNode {
         this.checked = false;
         this.listeners = {};
         this.classes = new Set();
-        this.classList = { add: name => this.classes.add(name), remove: name => this.classes.delete(name) };
+        this.classList = { add: name => this.classes.add(name), remove: name => this.classes.delete(name), contains: name => this.classes.has(name) };
     }
     get firstChild() { return this.children[0]; }
+    get firstElementChild() { return this.children.find(c => c.tag) || null; }
     get textContent() { return this.text + this.children.map(c => c.textContent).join(''); }
     set textContent(value) { this.text = String(value); this.children = []; }
+    // 与真实 DOM 一样：插入已有父节点的节点时先从原位置移走
     append(...children) {
-        for (const child of children) { child.parent = this; this.children.push(child); }
+        for (const child of children) { child.parent?.removeChild(child); child.parent = this; this.children.push(child); }
+    }
+    insertBefore(child, ref) {
+        child.parent?.removeChild(child);
+        child.parent = this;
+        const i = this.children.indexOf(ref);
+        this.children.splice(i < 0 ? this.children.length : i, 0, child);
     }
     remove() { this.parent?.removeChild(this); }
     focus() { document.activeElement = this; }

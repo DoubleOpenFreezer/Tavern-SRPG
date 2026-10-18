@@ -1,5 +1,5 @@
 // 设置页：描写模式、发送方式、战斗规则、注入、导入导出
-import { h, add, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
+import { groupSections, h, add, clear, toast, button, select, field, numInput, textArea, checkbox, textDialog } from './dom.js';
 import { CONTEXT_SECTIONS } from '../context.js';
 import { TOUGH_MODES, AIR_RULES } from '../engine.js';
 import { MACROS } from '../llm.js';
@@ -17,7 +17,7 @@ export function renderSettingsTab(app, root) {
     const on = (obj, k, after) => v => { obj[k] = v; app.save(); after?.(); };
 
     add(root,
-        h('div.tsrpg-section-title', '描写模式'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-feather'), ' ', '描写模式'),
         h('div.tsrpg-muted', '控制哪些战场变化需要 LLM 描写。关闭的项目不会出现在“需要描写”的列表中。'),
         h('div.tsrpg-checks',
             checkbox('描写移动 / 待机', s.narration.move, on(s.narration, 'move')),
@@ -31,7 +31,7 @@ export function renderSettingsTab(app, root) {
             checkbox('不描写的行动作为背景简要告知', s.narration.brief, on(s.narration, 'brief'), '开启后，未勾选描写的行动仍会以一句话告诉 LLM，避免它不知道发生了什么'),
         ),
 
-        h('div.tsrpg-section-title', '发送方式'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-paper-plane'), ' ', '发送方式'),
         h('div.tsrpg-grid2',
             field('棋盘操作后', select([
                 ['preview', '弹出预览，确认后发送'],
@@ -47,7 +47,7 @@ export function renderSettingsTab(app, root) {
             textArea(s.send.header, on(s.send, 'header'), 3),
             button('恢复默认', () => { s.send.header = DEFAULT_HEADER; app.save(); app.render(); }, { icon: 'fa-rotate-left' }))),
 
-        h('div.tsrpg-section-title', '战斗规则', h('small.tsrpg-muted', `（属于当前资料卡「${app.data.name}」）`)),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-scale-balanced'), ' ', '战斗规则', h('small.tsrpg-muted', `（属于当前资料卡「${app.data.name}」）`)),
         h('div.tsrpg-grid4',
             field('伤害公式', select([['diminishing', '递减防御（推荐）'], ['subtract', '旧版减法：攻 − 防'], ['ratio', '比例：攻² ÷ (攻 + 防)']], app.data.rules.formula, on(app.data.rules, 'formula'))),
             field('防御基准', numInput(app.data.rules.defenseScale ?? 12, on(app.data.rules, 'defenseScale'), { min: 1 }), '递减公式中，防御等于此数值时减伤50%'),
@@ -68,7 +68,7 @@ export function renderSettingsTab(app, root) {
         ),
         h('div.tsrpg-muted', '命中率＝基础命中 ＋（攻方AGI − 守方AGI）× 系数 ＋ 技能命中修正 − 守方地形闪避，限制在 0–100%。普通攻击、反击、伤害技能和对敌方的辅助技能都会判定；对友方的技能、攻击建筑物、必中技能一定命中。'),
 
-        h('div.tsrpg-section-title', 'LLM 读取战场', h('div.tsrpg-spacer'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-eye'), ' ', 'LLM 读取战场', h('div.tsrpg-spacer'),
             button('查看 LLM 看到的内容', () => previewContext(app), { icon: 'fa-eye' })),
         h('div.tsrpg-muted', '让 LLM 随时知道每个单位的 HP、状态、位置和地图，避免描写与棋盘对不上。有三种方式，可以同时使用。'),
 
@@ -101,7 +101,7 @@ export function renderSettingsTab(app, root) {
             h('small.tsrpg-muted', '仅在战斗进行中可用。需要使用支持函数调用的 Chat Completion 接口，并在 AI 响应配置中开启「启用函数调用」。'),
         ),
 
-        h('div.tsrpg-section-title', 'LLM 影响战场'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-robot'), ' ', 'LLM 影响战场'),
         h('div.tsrpg-muted', 'LLM 不会直接改数值：它要么从战斗系统列出的合法行动里做选择，要么写出指令，由战斗系统校验后再执行。'),
 
         h('div.tsrpg-label', '① LLM 指挥官：由 LLM 为 AI 单位选择行动'),
@@ -131,17 +131,17 @@ export function renderSettingsTab(app, root) {
         ),
         h('small.tsrpg-muted', '开启后，指令的写法会附在注入的战场信息末尾（可用「查看 LLM 看到的内容」检查）。重新生成、滑动或删除这条回复时，它造成的改动会自动撤回；如果之后棋盘又有别的改动，则不会自动撤回。'),
 
-        h('div.tsrpg-section-title', '界面'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-display'), ' ', '界面'),
         h('div.tsrpg-grid4',
             field('面板位置', select([['float', '完整窗口'], ['compact', '战斗小窗（地图和操作）']], s.ui.layout, v => app.setLayout(v))),
-            field('格子大小上限（像素）', numInput(s.ui.cell, on(s.ui, 'cell', () => app.render()), { min: 18, max: 80 }), '面板较窄时会自动缩小'),
+            field('格子大小上限（像素）', numInput(s.ui.cell, on(s.ui, 'cell', () => app.render()), { min: 18, max: 80 }), '棋盘会按面板的宽度和高度自动缩放，最大不超过此值'),
             h('div', checkbox('显示悬浮按钮', s.ui.fab, on(s.ui, 'fab', () => app.placeFab())), h('small.tsrpg-muted', '可拖动；关闭后从魔杖菜单或 /srpg 打开')),
             checkbox('显示移动和攻击过程', s.ui.animate !== false, on(s.ui, 'animate')),
             checkbox('受攻击时手动选择反击 / 防御', s.ui.confirmDefense !== false, on(s.ui, 'confirmDefense'), '关闭时自动选择可用的反击，否则防御'),
             field('过程速度（毫秒）', numInput(s.ui.actionDelay ?? 260, on(s.ui, 'actionDelay'), { min: 80, max: 1000, step: 20 }), '越小越快；战斗中也可以跳过过程'),
         ),
 
-        h('div.tsrpg-section-title', '导入 / 导出'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-file-export'), ' ', '导入 / 导出'),
         h('div.tsrpg-muted', '这里导出 / 导入的是全部资料卡和全局设置。单张资料卡请在「资料卡」页导出。'),
         h('div.tsrpg-row',
             button('导出全部', () => downloadJson(`tavern-srpg-all-${today()}.json`, allPayload(s)), { icon: 'fa-file-export' }),
@@ -154,6 +154,7 @@ export function renderSettingsTab(app, root) {
             }, { icon: 'fa-rotate-left', cls: 'danger' }),
         ),
     );
+    groupSections(root);
 }
 
 async function importAll(app) {

@@ -81,6 +81,8 @@ function formatEventBody(e) {
             return '迷雾中传来敌军活动的动静，但看不清具体动向。';
         case 'manual':
             return `【手动修改】${e.text}`;
+        case 'growth':
+            return `【剧情成长】${e.text}`;
         case 'rewind':
             return e.restore
                 ? `【战斗回溯】战场恢复到回溯前的进度（第 ${e.toTurn} 回合），之后的战况以当前战场为准。`
