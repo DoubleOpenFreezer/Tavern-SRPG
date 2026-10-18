@@ -311,6 +311,14 @@ export function defaultSettings() {
             // 注入哪些部分
             map: true, legend: true, stats: true, skills: true, nearest: true,
             logLines: 0, // 附带最近 N 条战斗记录
+            // 单位资料：把资料卡中的单位像世界书条目一样提供给聊天 AI（战斗之外也生效）
+            units: {
+                enabled: false,
+                scope: 'party', // party: 我方与友军 ; all: 包括敌人
+                trigger: 'keyword', // keyword: 最近的消息提到名字 / 别名 / 绑定的世界书关键词时注入 ; constant: 总是注入
+                scanDepth: 4, // 关键词扫描最近几条消息
+                skills: true, // 包含技能
+            },
         },
         tool: {
             enabled: false, // 注册函数调用工具，让 LLM 主动查询战场（需要支持函数调用的 Chat Completion 接口）

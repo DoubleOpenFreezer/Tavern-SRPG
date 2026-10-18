@@ -409,6 +409,22 @@ export function recentChat(count = 20, upTo = null, maxChars = 16000) {
 }
 
 const STORY_INJECT_KEY = 'tavern_srpg_story';
+const UNITS_INJECT_KEY = 'tavern_srpg_units';
+
+/** 单位资料（类似世界书条目，放在角色设定之后）；不需要进行中的战斗 */
+export function setUnitLoreInjection(text) {
+    const c = ctx();
+    if (typeof c.setExtensionPrompt !== 'function') return;
+    if (text && !isEnabledForChat()) text = '';
+    c.setExtensionPrompt(UNITS_INJECT_KEY, text ? substitute(text) : '', POSITIONS.after, 0, false, ROLES.system);
+}
+
+/** 关键词扫描用的文字：最近几条消息加上输入框里尚未发送的文字 */
+export function scanText(depth = 4) {
+    const chat = ctx().chat || [];
+    const recent = chat.slice(-Math.max(1, depth)).filter(m => m && !m.is_system).map(m => String(m.mes || ''));
+    return [...recent, readMainInput()].join('\n');
+}
 const STORY_META = 'tavern_srpg_story';
 
 /** 剧情联动的说明（不需要进行中的战斗） */

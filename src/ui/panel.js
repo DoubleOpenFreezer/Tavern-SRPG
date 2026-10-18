@@ -11,6 +11,7 @@ import { buildBattleContext } from '../context.js';
 import { commandGuide } from '../commands.js';
 import { alive } from '../engine.js';
 import { storyGuide } from '../story.js';
+import { unitLoreList, buildUnitLore } from '../unit-lore.js';
 import { resumeStory, readyStoryCount } from './story-flow.js';
 import * as ST from '../st.js';
 
@@ -383,8 +384,35 @@ export class App {
         ST.setStoryInjection(cfg?.enabled && profile ? storyGuide(profile, { battle: cfg.battle, inBattle: !!b?.active }) : '');
     }
 
+    /**
+     * 单位资料：资料卡中的单位按关键词（或总是）提供给聊天 AI
+     * @returns {{text:string, used:string[], list:object[]}}
+     */
+    unitLore() {
+        const cfg = this.settings.inject.units;
+        const profile = ST.boundProfile();
+        if (!cfg?.enabled || !profile) return { text: '', used: [], list: [] };
+        // 战场信息已经注入时，场上单位以战场状态为准，不重复提供
+        const b = ST.getBattle();
+        const exclude = new Set(b?.active && !b.paused && this.settings.inject.enabled ? alive(b).map(u => u.defId) : []);
+        const list = unitLoreList(profile, { scope: cfg.scope, exclude, subst: ST.substitute, skills: cfg.skills !== false });
+        return { ...buildUnitLore(list, { trigger: cfg.trigger, scanText: ST.scanText(Number(cfg.scanDepth) || 4) }), list };
+    }
+
+    /** 开关关闭时的预览：按当前设置列出全部单位 */
+    unitLorePreview() {
+        const cfg = this.settings.inject.units;
+        const list = unitLoreList(ST.boundProfile() || this.data, { scope: cfg.scope, subst: ST.substitute, skills: cfg.skills !== false });
+        return buildUnitLore(list, { trigger: 'constant' }).text;
+    }
+
+    updateUnitLore() {
+        ST.setUnitLoreInjection(this.unitLore().text);
+    }
+
     async updateInjection() {
         this.updateStoryInjection();
+        this.updateUnitLore();
         const seq = ++this.injectSeq;
         const s = this.settings;
         const b = ST.getBattle();

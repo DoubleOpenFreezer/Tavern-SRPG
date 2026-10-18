@@ -5,11 +5,39 @@ import { TOUGH_MODES, AIR_RULES } from '../engine.js';
 import { MACROS } from '../llm.js';
 import { COMMANDS } from '../commands.js';
 import { getBattle } from '../st.js';
+import * as ST from '../st.js';
 import { DEFAULT_HEADER, defaultSettings } from '../defaults.js';
 import { allPayload, profilesFromPayload, addProfiles, GLOBAL_KEYS } from '../profiles.js';
 import { normalizeProfile } from '../st.js';
 import { downloadJson, pickJson, today } from './files.js';
 
+
+/** 单位资料：资料卡里的单位像世界书条目一样提供给聊天 AI */
+function unitLoreSection(app, on) {
+    const cfg = app.settings.inject.units;
+    const refresh = () => { app.updateUnitLore(); app.render(); };
+    return [
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-address-book'), ' 单位资料（类似世界书）'),
+        h('div.tsrpg-muted', '把当前聊天绑定的资料卡中设定的单位（属性、兵种、特质、技能、别名）提供给聊天 AI，战斗之外也能读到，剧情描写与战棋能力保持一致。与世界书条目一样按关键词触发：最近的消息里出现单位的名字、别名或绑定的世界书关键词时才附上，放在角色设定之后。'),
+        h('div.tsrpg-row',
+            checkbox('把单位资料提供给 AI', cfg.enabled, on(cfg, 'enabled', refresh)),
+            button('查看本次会附上的内容', () => {
+                const { text, used, list } = app.unitLore();
+                const note = !cfg.enabled ? '开关未开启，以下为开启后的效果。' : !ST.isEnabledForChat() ? '当前聊天没有绑定资料卡，不会注入。'
+                    : `${list.length} 个单位中，${used.length ? `本次触发：${used.join('、')}` : '本次没有触发的单位（最近的消息里没有提到它们）'}。`;
+                const all = app.unitLorePreview();
+                const preview = cfg.enabled && text ? text : `${cfg.enabled ? '（本次不会附上任何内容。下面是各单位的资料，消息里提到时才会附上。）\n\n' : ''}${all || '（资料卡里没有符合范围的单位）'}`;
+                textDialog(app.panel, '单位资料', preview, { note });
+            }, { icon: 'fa-eye' })),
+        cfg.enabled ? h('div.tsrpg-grid4',
+            field('提供哪些单位', select([['party', '我方与友军'], ['all', '全部（包括敌人）']], cfg.scope, on(cfg, 'scope', refresh))),
+            field('触发方式', select([['keyword', '提到名字或别名时'], ['constant', '总是附上']], cfg.trigger, on(cfg, 'trigger', refresh)),
+                '「总是附上」会占用更多上下文'),
+            cfg.trigger === 'keyword' ? field('扫描最近几条消息', numInput(cfg.scanDepth, on(cfg, 'scanDepth'), { min: 1, max: 50 })) : null,
+            h('div', checkbox('包含技能', cfg.skills !== false, on(cfg, 'skills', refresh)))) : null,
+        cfg.enabled ? h('small.tsrpg-muted', '战斗进行中、且开启了战场信息自动注入时，场上的单位以战场状态为准，不再重复附上。别名中的 {{user}} {{char}} 会被替换。单位编辑器里的「备注」不会提供给 AI。') : null,
+    ];
+}
 
 export function renderSettingsTab(app, root) {
     clear(root);
@@ -101,6 +129,7 @@ export function renderSettingsTab(app, root) {
             h('small.tsrpg-muted', '仅在战斗进行中可用。需要使用支持函数调用的 Chat Completion 接口，并在 AI 响应配置中开启「启用函数调用」。'),
         ),
 
+        unitLoreSection(app, on),
         h('div.tsrpg-section-title', h('i.fa-solid.fa-robot'), ' ', 'LLM 影响战场'),
         h('div.tsrpg-muted', 'LLM 不会直接改数值：它要么从战斗系统列出的合法行动里做选择，要么写出指令，由战斗系统校验后再执行。'),
 
