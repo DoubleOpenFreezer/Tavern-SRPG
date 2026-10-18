@@ -5,8 +5,8 @@ import { DESIGN_SOURCES, designerGenerate, fetchModels } from '../ai-api.js';
 import { MISSION_NAMES, matchupLabel, matchup, battleUnitTypes, SIDE_NAMES } from '../engine.js';
 import { skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
-import { buildGrowthPrompt, normalizeGrowth, applyGrowth, growthLines, growthIds, growthSummary, storyGuide, STORY_KINDS } from '../story.js';
-import { designContext, applyStoryGrowth, undoStoryGrowth, retryStory, dismissStory } from './story-flow.js';
+import { buildGrowthPrompt, normalizeGrowth, applyGrowth, growthLines, growthIds, growthSummary, STORY_KINDS, SYNC_TRIGGERS } from '../story.js';
+import { designContext, applyStoryGrowth, undoStoryGrowth, retryStory, dismissStory, syncStory, syncInfo } from './story-flow.js';
 import { startBattle } from './battle.js';
 import { uid } from '../defaults.js';
 
@@ -153,7 +153,7 @@ function taskSection(app, ds) {
                 numInput(ds.h, v => { ds.h = Math.max(3, Math.min(40, v)); }, { min: 3, max: 40 }))) : null,
             ds.task === 'map' ? h('div', checkbox('允许新建单位、地形和兵种', ds.allowNew, v => { ds.allowNew = v; })) : null,
             ds.task === 'growth' ? field('可以修改', select([['party', '我方与友军'], ['all', '所有单位（含敌人）']], ds.scope, v => { ds.scope = v; })) : null),
-        ds.task === 'story' || ds.task === 'growth' ? h('small.tsrpg-muted', `会读取当前聊天最近 ${app.settings.designer.story.chatDepth} 条消息作为剧情依据（数量在上方「剧情联动」中设置）。`) : null,
+        ds.task === 'story' || ds.task === 'growth' ? h('small.tsrpg-muted', `会读取当前聊天最近 ${app.settings.designer.story.chatDepth} 楼作为剧情依据（数量在上方「剧情同步」中设置）。`) : null,
         field(ds.task === 'story' || ds.task === 'growth' ? '补充说明（可选）' : '要求', request),
         h('div.tsrpg-row',
             ds.busy
@@ -223,35 +223,74 @@ function storyItem(ds) {
     return ds.storyId ? ST.getStory()?.items.find(x => x.id === ds.storyId) || null : null;
 }
 
-// ---------------------------------------------------------------- 剧情联动
+// ---------------------------------------------------------------- 剧情同步
 
 const STATUS = { queued: '等待生成', working: '生成中……', ready: '待确认', applied: '已应用', error: '生成失败' };
 
 function storySection(app, ds) {
     const cfg = app.settings.designer.story;
-    const set = (k, rerender = true) => v => { cfg[k] = v; app.save(); app.updateStoryInjection(); if (rerender) app.render(); };
+    const set = (k, rerender = true) => v => { cfg[k] = v; app.save(); if (rerender) app.render(); };
     const items = (ST.getStory()?.items || []).filter(x => x.status !== 'dismissed').slice(-8).reverse();
     const waiting = items.filter(x => x.status === 'ready').length;
+    const bound = ST.isEnabledForChat();
     return h('details.tsrpg-design-box', { open: ds.storyOpen ?? (cfg.enabled || waiting > 0), ontoggle: e => { ds.storyOpen = e.target.open; } },
-        h('summary', h('i.fa-solid.fa-book-open-reader'), ' 剧情联动　',
-            h('small.tsrpg-muted', `${cfg.enabled ? '已开启' : '未开启'}${waiting ? ` · ${waiting} 条待确认` : ''}`)),
-        h('small.tsrpg-muted', '开启后，聊天 AI 在剧情中出现成长（学会新能力、换装备、新同伴加入）或即将开战时，会在回复末尾写一个隐藏标记；设计助手随后读取最近的剧情、世界书和单位资料，生成角色成长或关卡，列在下面等你确认。'),
-        h('div.tsrpg-row',
-            checkbox('开启剧情联动', cfg.enabled, set('enabled')),
-            cfg.enabled ? button('查看注入给聊天 AI 的说明', () => {
-                const b = ST.getBattle();
-                textDialog(app.panel, '注入给聊天 AI 的剧情联动说明', ST.substitute(storyGuide(ST.boundProfile() || app.data, { battle: cfg.battle, inBattle: !!b?.active })), { note: '每次生成时自动附上（聊天记录中，深度 1，系统身份）。' });
-            }, { icon: 'fa-eye' }) : null),
+        h('summary', h('i.fa-solid.fa-book-open-reader'), ' 剧情同步　',
+            h('small.tsrpg-muted', `${cfg.enabled ? (cfg.trigger === 'manual' ? '手动同步' : `每 ${cfg.every} 轮自动同步`) : '未开启'}${waiting ? ` · ${waiting} 条待确认` : ''}`)),
+        h('small.tsrpg-muted', '由下方「API 设置」中的模型在后台读取聊天记录（只附上世界书、角色卡、单位资料和指定楼层的聊天），找出角色成长（学会新能力、换装备、新同伴加入）、即将开始的战斗，以及战斗中剧情造成的战场变化，列在下面等你确认。聊天 AI 不需要写任何标记，不会打断正文。'),
+        h('div.tsrpg-row', checkbox('开启剧情同步', cfg.enabled, set('enabled'))),
         cfg.enabled ? [
             h('div.tsrpg-grid3',
-                field('角色成长', select([['confirm', '生成后由我确认'], ['auto', '生成后自动应用（可撤销）']], cfg.grow, set('grow'))),
-                field('读取最近几条聊天', numInput(cfg.chatDepth, v => set('chatDepth', false)(Math.max(2, Math.min(200, v))), { min: 2, max: 200 })),
-                h('div', checkbox('允许剧情触发关卡', cfg.battle, set('battle'), '剧情即将开战时，设计一张符合剧情的关卡供你确认；已有进行中的战斗时忽略'))),
-            h('div.tsrpg-row',
-                checkbox('成长同时更新进行中的战斗', cfg.syncBattle, set('syncBattle'), '进行中的战斗里来自同一单位的棋子也会获得新属性和技能'),
-                checkbox('从聊天消息中移除标记', cfg.hideTag, set('hideTag'))),
+                field('什么时候同步', select(Object.entries(SYNC_TRIGGERS), cfg.trigger, set('trigger'))),
+                cfg.trigger === 'manual'
+                    ? field('手动同步', h('small.tsrpg-muted', '点击下方或标题栏的 ', h('i.fa-solid.fa-book-open-reader'), ' 按钮'))
+                    : field('每隔几轮 AI 回复', numInput(cfg.every, v => set('every')(Math.max(1, Math.min(50, v))), { min: 1, max: 50 }), '重新生成、滑动的回复不重复计数'),
+                field('每次最多读取几楼', numInput(cfg.chatDepth, v => set('chatDepth', false)(Math.max(2, Math.min(200, v))), { min: 2, max: 200 }), '超出时只读最近的部分')),
+            h('div.tsrpg-grid3',
+                field('角色成长', select([['confirm', '列出来由我确认'], ['auto', '自动应用（可撤销）']], cfg.grow, set('grow'))),
+                h('div', checkbox('允许剧情触发关卡', cfg.battle, set('battle'), '剧情即将开战时，设计一张符合剧情的关卡供你确认；已有进行中的战斗时忽略')),
+                h('div', checkbox('成长同时更新进行中的战斗', cfg.syncBattle, set('syncBattle'), '进行中的战斗里来自同一单位的棋子也会获得新属性和技能'))),
+            bound ? syncControls(app, ds, cfg) : h('div.tsrpg-muted', '当前聊天没有绑定资料卡，绑定后才会同步。'),
+            app.settings.designer.source === 'st' ? h('small.tsrpg-muted', '提示：现在用的是「当前 SillyTavern 使用的 API」，同步与聊天共用同一个接口。想让两者完全互不影响，可以在「API 设置」里改用连接配置或自定义 API。') : null,
         ] : null,
-        items.length ? h('div.tsrpg-story-list', items.map(it => storyRow(app, it))) : h('div.tsrpg-muted', cfg.enabled ? '还没有剧情提议。' : null),
+        items.length ? h('div.tsrpg-story-list', items.map(it => storyRow(app, it))) : h('div.tsrpg-muted', cfg.enabled ? '还没有同步出变化。' : null),
+    );
+}
+
+/** 同步进度与手动同步：可以指定读取的楼层范围 */
+function syncControls(app, ds, cfg) {
+    const info = syncInfo();
+    const s = info.sync;
+    const autoFrom = info.syncedTo == null ? Math.max(0, info.last - (Number(cfg.chatDepth) || 20) + 1) : info.syncedTo + 1;
+    const from = Math.min(ds.syncFrom ?? autoFrom, Math.max(0, info.last));
+    const to = Math.min(ds.syncTo ?? info.last, info.last);
+    const upToDate = ds.syncFrom == null && autoFrom > info.last; // 没有新剧情：改了起始楼层才能重新分析
+    const progress = info.working
+        ? [h('i.fa-solid.fa-spinner.fa-spin'), ` 正在同步第 ${info.working.from}–${info.working.to} 楼……`]
+        : info.syncedTo == null ? '这个聊天还没有同步过；自动同步从开启后的新回复开始，更早的剧情可以手动同步。'
+            : `已同步到第 ${info.syncedTo} 楼${info.fresh ? `，之后有 ${info.fresh} 轮新回复` : '，没有新回复'}。`;
+    const last = s && !info.working ? (s.status === 'error'
+        ? h('small.tsrpg-warn', `上次同步（第 ${s.from}–${s.to} 楼）失败：${s.error}`)
+        : h('small.tsrpg-muted', `上次同步第 ${s.from}–${s.to} 楼：${s.found?.length ? `发现${s.found.join('、')}` : '没有需要更新的内容'}${s.summary ? `——${s.summary}` : ''}${s.skipped ? `（有 ${s.skipped} 楼超出读取上限，没有读到）` : ''}`)) : null;
+    const run = () => {
+        const range = { from: ds.syncFrom ?? null, to: ds.syncTo ?? null, manual: true };
+        ds.syncFrom = null; ds.syncTo = null;
+        syncStory(app, range);
+    };
+    return h('div.tsrpg-sync-box',
+        h('div.tsrpg-sync-progress', progress), last,
+        info.last >= 0 ? h('div.tsrpg-row.tsrpg-sync-range',
+            h('span', '读取第'), h('div.tsrpg-sync-num', numInput(from, v => { ds.syncFrom = Math.max(0, Math.min(info.last, v)); app.render(); }, { min: 0, max: info.last })),
+            h('span', '楼到第'), h('div.tsrpg-sync-num', numInput(to, v => { ds.syncTo = Math.max(0, Math.min(info.last, v)); app.render(); }, { min: 0, max: info.last })),
+            h('span', `楼（最新是第 ${info.last} 楼）`),
+            button('立即同步', run, { icon: 'fa-rotate', cls: 'primary', disabled: !!info.working || from > to || upToDate, title: upToDate ? '没有新的剧情；要重新分析已同步的楼层，先修改起始楼层' : '' }),
+            info.syncedTo !== info.last ? button('跳过之前的剧情', () => {
+                const store = ST.getStory(true);
+                store.syncedTo = info.last; ST.saveStory();
+                ds.syncFrom = null; ds.syncTo = null;
+                toast('info', `已把第 ${info.last} 楼之前的剧情标记为已同步。`);
+                app.render();
+            }, { icon: 'fa-forward', disabled: !!info.working, title: '不分析之前的剧情，从下一条回复开始计数' }) : null) : null,
+        h('small.tsrpg-muted', '楼层号就是聊天消息上的 # 编号。读取范围之前的几楼（不超过「每次最多读取几楼」）会作为参考附上，不会重复分析。'),
     );
 }
 
@@ -267,7 +306,7 @@ function storyRow(app, it) {
         h('div.tsrpg-design-body',
             h('div.tsrpg-row', h(`i.fa-solid.${it.kind === 'grow' ? 'fa-arrow-trend-up' : 'fa-chess-rook'}`), h('b', `${STORY_KINDS[it.kind]}：${it.subject}`),
                 h('span.tsrpg-tag', it.status === 'working' ? [h('i.fa-solid.fa-spinner.fa-spin'), ' 生成中'] : STATUS[it.status]),
-                h('small.tsrpg-muted', `第 ${it.mesId + 1} 楼`)),
+                h('small.tsrpg-muted', it.from != null && it.from !== it.mesId ? `第 ${it.from}–${it.mesId} 楼` : `第 ${it.mesId} 楼`)),
             it.text ? h('small', it.text) : null,
             it.status === 'applied' && it.applied?.lines?.length ? h('small.tsrpg-muted', it.applied.lines.join('；')) : null,
             it.status === 'error' ? h('small.tsrpg-warn', it.error) : null),
@@ -333,7 +372,7 @@ function growthResult(app, ds) {
         battle?.active ? h('div', checkbox('同时更新进行中的战斗', cfg.syncBattle, v => { cfg.syncBattle = v; app.save(); }, '进行中的战斗里来自同一单位的棋子也会获得新属性和技能；新同伴不会直接出场')) : null,
         h('div.tsrpg-row', button(`应用选中的变化（${pending.length}）`, apply, { icon: 'fa-check', cls: 'primary', disabled: !pending.length || !!ds.busy }),
             storyItem(ds)?.status === 'applied' ? button('撤销', () => { undoStoryGrowth(app, storyItem(ds)); ds.imported = new Set(); app.render(); }, { icon: 'fa-rotate-left' }) : null),
-        h('small.tsrpg-muted', '应用后资料卡里的单位立即更新，之后开始的战斗都会使用新资料；可以在上方「剧情联动」里撤销。'),
+        h('small.tsrpg-muted', '应用后资料卡里的单位立即更新，之后开始的战斗都会使用新资料；可以在上方「剧情同步」里撤销。'),
         reviseTools(app, ds),
     );
 }

@@ -8,11 +8,9 @@ import { renderDesignerTab } from './designer-tab.js';
 import { getProfile } from '../profiles.js';
 import { toast } from './dom.js';
 import { buildBattleContext } from '../context.js';
-import { commandGuide } from '../commands.js';
 import { alive } from '../engine.js';
-import { storyGuide } from '../story.js';
 import { unitLoreList, buildUnitLore } from '../unit-lore.js';
-import { resumeStory, readyStoryCount } from './story-flow.js';
+import { resumeStory, readyStoryCount, syncStory, syncInfo } from './story-flow.js';
 import * as ST from '../st.js';
 
 const TABS = [
@@ -102,9 +100,14 @@ export class App {
         this.tabBar = h('div.tsrpg-tabs');
         this.body = h('div.tsrpg-body');
         this.layoutBtn = button('', () => this.setLayout(this.settings.ui.layout === 'compact' ? 'float' : 'compact'), { cls: 'tsrpg-icon-btn' });
+        // 剧情同步：开启后在标题栏显示，点击立即读取到最新一楼
+        this.syncBadge = h('span.tsrpg-sync-badge', { hidden: true });
+        this.syncBtn = button('', () => syncStory(this, { manual: true }), { icon: 'fa-book-open-reader', cls: 'tsrpg-icon-btn tsrpg-sync-btn' });
+        this.syncBtn.append(this.syncBadge);
         const header = h('div.tsrpg-header',
             h('div.tsrpg-title', h('i.fa-solid.fa-chess-knight'), h('span', ' Tavern-SRPG')),
             this.tabBar,
+            this.syncBtn,
             this.layoutBtn,
             button('', () => this.toggle(false), { icon: 'fa-xmark', cls: 'tsrpg-icon-btn', title: '收起（点击悬浮按钮可再次打开）' }),
         );
@@ -260,8 +263,25 @@ export class App {
         document.body.style.removeProperty('--tsrpg-dock-width');
     }
 
+    /** 标题栏的剧情同步按钮：同步中显示动画，角标是上次同步之后的新回复数 */
+    updateSyncButton() {
+        if (!this.syncBtn) return;
+        const on = !!this.settings.designer?.story?.enabled && ST.isEnabledForChat();
+        this.syncBtn.hidden = !on;
+        if (!on) return;
+        const info = syncInfo();
+        const working = !!info.working;
+        this.syncBtn.classList.toggle('working', working);
+        this.syncBtn.querySelector('i')?.classList.toggle('fa-fade', working);
+        this.syncBadge.hidden = working || !info.fresh;
+        this.syncBadge.textContent = info.fresh ? String(info.fresh) : '';
+        this.syncBtn.title = working ? `正在同步第 ${info.working.from}–${info.working.to} 楼的剧情……`
+            : `同步剧情：由插件模型读取${info.syncedTo == null ? '最近的聊天' : `第 ${info.syncedTo} 楼之后的 ${info.fresh} 轮新回复`}，更新角色成长、关卡和战场`;
+    }
+
     /** 悬浮按钮上的提示：LLM 提议的战场变化数量 */
     updateFab() {
+        this.updateSyncButton();
         if (!this.fabBadge) return;
         const n = (ST.getBattle()?.llm?.proposals?.cmds?.length || 0) + readyStoryCount();
         this.fabBadge.hidden = !n;
@@ -365,23 +385,12 @@ export class App {
     battleContext(sections) {
         const b = ST.getBattle();
         if (!b?.active || b.paused) return '';
-        const { inject: inj, llm } = this.settings;
-        const opts = { ...inj, sections, commands: llm.commands, rules: this.data.rules };
+        const { inject: inj } = this.settings;
+        const opts = { ...inj, sections, rules: this.data.rules };
         if (sections) Object.assign(opts, { map: true, legend: true, stats: true, skills: true, nearest: true });
-        let text = buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {});
-        // 开启剧情指令时，告诉 LLM 怎样写指令
-        if (llm.commands && !sections) text += `\n\n${commandGuide(llm)}`;
+        const text = buildBattleContext(b, opts, inj.includeWb ? this.wbCache : {});
         // 替换别名、世界书内容里的 {{user}} {{char}}，让宏、工具、注入看到的都是真实名字
         return ST.substitute(text);
-    }
-
-    /** 把战场信息注入到提示词中 */
-    /** 剧情联动说明：告诉聊天 LLM 什么时候写 <srpg-story> 标记（不需要进行中的战斗） */
-    updateStoryInjection() {
-        const cfg = this.settings.designer?.story;
-        const profile = ST.boundProfile();
-        const b = ST.getBattle();
-        ST.setStoryInjection(cfg?.enabled && profile ? storyGuide(profile, { battle: cfg.battle, inBattle: !!b?.active }) : '');
     }
 
     /**
@@ -410,8 +419,8 @@ export class App {
         ST.setUnitLoreInjection(this.unitLore().text);
     }
 
+    /** 把战场信息与单位资料注入到提示词中（只提供资料，不要求聊天 AI 输出任何标记） */
     async updateInjection() {
-        this.updateStoryInjection();
         this.updateUnitLore();
         const seq = ++this.injectSeq;
         const s = this.settings;

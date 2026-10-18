@@ -279,7 +279,7 @@ export const PROFILE_KEYS = ['terrains', 'unitTypes', 'units', 'maps', 'rules'];
 
 export function defaultSettings() {
     return {
-        version: 6,
+        version: 7,
         profiles: [sampleProfile()],
         activeProfile: SAMPLE_PROFILE_ID,
         defaultProfile: SAMPLE_PROFILE_ID, // 兼容旧设置，仅作编辑器回退；不启用未绑定聊天
@@ -324,13 +324,12 @@ export function defaultSettings() {
             enabled: false, // 注册函数调用工具，让 LLM 主动查询战场（需要支持函数调用的 Chat Completion 接口）
         },
         llm: {
-            // ① 剧情指令：LLM 在回复末尾写 <srpg> 指令块修改战场
+            // ① 战场变化：剧情同步时，插件 LLM 从剧情中读出的战场变化（落石、喝药、援军…）
             commands: false,
             mode: 'confirm', // confirm: 由我确认后应用 ; auto: 自动应用
             allow: { damage: true, heal: true, status: true, unstatus: true, move: true, retreat: true, spawn: true, terrain: true, end: false },
             maxChangePct: 50, // 单条指令的 HP 变化上限（目标最大 HP 的百分比）
             allowKill: false, // 指令能否直接击败单位
-            hideBlock: true, // 从聊天消息中移除指令块
             // ② LLM 指挥官：由 LLM 为 AI 单位选择行动
             commander: { enemy: false, ally: false },
             options: 6, // 每个单位最多列出几个选项
@@ -346,13 +345,14 @@ export function defaultSettings() {
             books: null, // 读取哪些世界书；null＝自动（当前角色、聊天和全局启用的世界书）
             includeChar: true, // 附带角色卡设定
             loreChars: 24000, // 世界书内容的字数上限
-            // 剧情联动：聊天 LLM 在回复末尾写 <srpg-story> 标记，由设计助手生成角色成长或剧情关卡
+            // 剧情同步：由这里配置的模型（不是聊天 AI）读取聊天记录，找出角色成长、即将开始的战斗和战场变化
             story: {
                 enabled: false,
+                trigger: 'interval', // interval: 每隔 every 轮 AI 回复自动同步 ; manual: 只在点击时同步
+                every: 3,
                 grow: 'confirm', // confirm: 生成后由我确认 ; auto: 生成后自动应用（可撤销）
                 battle: true, // 允许剧情触发关卡
-                chatDepth: 20, // 读取最近几条聊天
-                hideTag: true, // 从聊天消息中移除标记块
+                chatDepth: 20, // 每次最多读取几楼（以同步到的楼层结尾）
                 syncBattle: true, // 成长同时更新进行中战斗里的单位
             },
         },

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { flatDefaults as defaultSettings, makeMap, makeUnit } from '../src/defaults.js';
 import * as E from '../src/engine.js';
 import { formatEvent } from '../src/narrator.js';
-import { extractBlocks, parseCommands, applyCommand, previewCommands, commandGuide, findUnit } from '../src/commands.js';
+import { parseCommands, applyCommand, previewCommands, commandGuide, findUnit } from '../src/commands.js';
 import { buildCommanderPrompt, parseCommanderReply, describePlan } from '../src/commander.js';
 
 const S = defaultSettings();
@@ -16,10 +16,7 @@ const sample = () => {
 };
 const run = (b, text, o = opt) => parseCommands(text).map(c => applyCommand(b, c, o));
 
-test('从回复中取出指令块并清理正文', () => {
-    const { clean, blocks } = extractBlocks('落石轰然砸下！\n\n<srpg>\ndamage E1 5 落石\n</srpg>\n');
-    assert.equal(clean, '落石轰然砸下！');
-    assert.equal(blocks.length, 1);
+test('解析指令文字：去掉列表符号，统一坐标写法，无法识别的行带上错误', () => {
     const cmds = parseCommands('- damage E1 5 被落石砸中\n移动 小明 (3,4) 被击退\n喵喵 1');
     assert.deepEqual(cmds.map(c => c.cmd), ['damage', 'move', null]);
     assert.deepEqual(cmds[1].args, ['小明', '3', '4', '被击退']);
@@ -79,9 +76,10 @@ test('预演不修改战场，并逐条报告错误', () => {
     assert.equal(b.units[2].hp, 18);
 });
 
-test('指令说明只列出允许的指令', () => {
+test('指令说明（给剧情同步的插件模型）只列出允许的指令', () => {
     const g = commandGuide({ ...opt, allow: { ...opt.allow, spawn: false } });
-    assert.match(g, /<srpg>/);
+    assert.match(g, /battleChanges/);
+    assert.doesNotMatch(g, /<srpg>/);
     assert.ok(!g.includes('spawn '));
     assert.match(g, /不能直接击败单位/);
 });

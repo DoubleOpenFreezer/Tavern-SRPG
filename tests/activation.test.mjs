@@ -4,7 +4,8 @@ import { defaultSettings, MODULE_NAME, META_KEY } from '../src/defaults.js';
 import { createBattle } from '../src/engine.js';
 import * as ST from '../src/st.js';
 import { registerMacros, registerTool } from '../src/llm.js';
-import { handleMessage, revertMessage, handleDeleted } from '../src/ui/llm-flow.js';
+import { revertMessage, handleDeleted } from '../src/ui/llm-flow.js';
+import { handleStoryMessage, handleStoryDeleted, syncStory } from '../src/ui/story-flow.js';
 import { installBattleMessageFolding } from '../src/ui/chat-messages.js';
 
 // Editors register their mouse-up listener at import time.
@@ -31,6 +32,7 @@ function fixture(t) {
         setExtensionPrompt(key, text) { prompts.push(text); },
         registerMacro(name, fn) { macros.set(name, fn); },
         registerFunctionTool(value) { tool = value; },
+        async generateRaw() { quietCalls++; return '{}'; },
         async generateQuietPrompt() { quietCalls++; return ''; },
     };
     for (const [key, value] of Object.entries({ SillyTavern: { getContext: () => context }, document: { getElementById() { throw new Error('未绑定时不应操作输入框'); } } })) {
@@ -44,7 +46,7 @@ function fixture(t) {
 test('未绑定角色不会读写旧战斗、注入提示词、改写回复或调用LLM', async t => {
     const { settings, raw, context, prompts, app, saves, quietCalls } = fixture(t);
     settings.llm.commands = true;
-    settings.llm.hideBlock = true;
+    Object.assign(settings.designer.story, { enabled: true, trigger: 'interval', every: 1 });
     raw.llm = { proposals: { mesId: 0 }, applied: { mesId: 0, rev: 7, snapshot: { turn: 99 } } };
     raw.rev = 7;
     const before = structuredClone(context.chatMetadata), message = context.chat[0].mes;
@@ -56,12 +58,11 @@ test('未绑定角色不会读写旧战斗、注入提示词、改写回复或�
     ST.setInjection('不应该注入的内容');
     assert.ok(prompts.every(text => text === ''));
     assert.equal(app.battleContext(), '');
-    await handleMessage(app, 0, 'normal');
-    revertMessage(app, 0); handleDeleted(app);
-    await ST.rewriteMessage(0, '不应该改写');
+    handleStoryMessage(app, 0, 'normal');
+    revertMessage(app, 0); handleDeleted(app); handleStoryDeleted(app);
+    assert.equal(await syncStory(app, { manual: true }), false);
     assert.equal(ST.sendAsUser('不应该发送'), false);
     assert.equal(ST.writeMainInput('不应该填入'), false);
-    await assert.rejects(ST.quietGenerate('不应该生成'), /未绑定/);
     assert.equal(context.chat[0].mes, message);
     assert.deepEqual(context.chatMetadata, before);
     assert.equal(saves(), 0); assert.equal(quietCalls(), 0);
@@ -168,7 +169,7 @@ test('未绑定角色不启动聊天折叠观察器，绑定后启动、解绑�
     assert.equal(disconnected, 1);
 });
 
-test('暂停仍可读取保存进度，但停止提示词、宏、工具、消息改写及剧情指令', async t => {
+test('暂停仍可读取保存进度，但停止提示词、宏、工具及战场变化', async t => {
     const { settings, profile, raw, app, context, macros, tool, prompts, saves } = fixture(t);
     settings.bindings['char:alice.png'] = profile.id;
     settings.tool.enabled = true; settings.llm.commands = true;
@@ -184,12 +185,9 @@ test('暂停仍可读取保存进度，但停止提示词、宏、工具、消�
     for (const fn of macros.values()) assert.equal(fn(), '');
     assert.equal(tool().shouldRegister(), false);
     const message = context.chat[0].mes;
-    await handleMessage(app, 0, 'normal');
     revertMessage(app, 0); handleDeleted(app);
-    await ST.rewriteMessage(0, '不应该改写');
     assert.equal(ST.sendAsUser('不应该发送'), false);
     assert.equal(ST.writeMainInput('不应该填入'), false);
-    await assert.rejects(ST.quietGenerate('不应该调用'), /没有进行中的战斗/);
     assert.equal(context.chat[0].mes, message);
     assert.deepEqual(raw, before);
     assert.equal(saves(), previousSaves);

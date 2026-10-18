@@ -1,52 +1,34 @@
-// 剧情联动（纯逻辑）：聊天回复里的 <srpg-story> 标记、角色成长的提示词 / 校验 / 差异 / 应用
+// 剧情同步（纯逻辑）：插件 LLM 读取聊天记录的范围与提示词、角色成长的提示词 / 校验 / 差异 / 应用
 import { uid } from './defaults.js';
 import { normalizeSkill, SIDE_NAMES } from './engine.js';
 import { SCHEMA, designRules, existingContent, normalizeDesign, applyDesign, skillFrom, traitFrom, int, str, bool, pick, arr } from './designer.js';
 import { skillSummary } from './narrator.js';
 
-export const STORY_TAG = 'srpg-story';
 export const STORY_KINDS = { grow: '角色成长', battle: '剧情关卡' };
-const BLOCK_RE = new RegExp(`<${STORY_TAG}>([\\s\\S]*?)<\\/${STORY_TAG}>`, 'gi');
+export const SYNC_TRIGGERS = { interval: '每隔几轮对话自动同步', manual: '只在我点击时同步' };
 
-// ---------------------------------------------------------------- 聊天中的标记
+// ---------------------------------------------------------------- 剧情同步：读取范围
 
-/** 注入给聊天 LLM 的说明：剧情中发生成长或即将开战时写标记 */
-export function storyGuide(profile, { battle = true, inBattle = false } = {}) {
-    const party = (profile.units || []).filter(u => u.side !== 'enemy' && u.kind !== 'object').map(u => u.name);
-    const lines = [
-        '[Tavern-SRPG 剧情联动]',
-        '剧情中出现下列情况时，在回复的最后附上一个标记块（不要在正文里提到它，也不要解释）：',
-        '- 我方角色学会了新能力或技能、得到或失去装备、实力成长或受到长期削弱、新的同伴加入我方：',
-        '  grow <角色名> | <一句话说明发生了什么、新能力是什么样的>',
-    ];
-    if (battle && !inBattle) lines.push('- 剧情即将进入一场需要在战棋棋盘上进行的战斗（双方已经对峙、即将开打）：', '  battle <地点> | <一句话说明敌人、我方出场的角色与局势>');
-    lines.push(
-        '格式示例：',
-        `<${STORY_TAG}>`,
-        'grow 艾琳 | 在古代图书馆学会了「星落」，可以召唤流星攻击一片区域',
-        `</${STORY_TAG}>`,
-        '没有这些情况时不要写标记；同一件事只标记一次；数值与战斗由战棋系统决定，不要在正文里写数值。',
-    );
-    if (party.length) lines.push(`当前我方角色：${party.join('、')}。`);
-    return lines.join('\n');
+/** AI 回复的楼层数（after, upto]：用来判断「每隔几轮」 */
+export function countReplies(chat, after = -1, upto = (chat?.length ?? 0) - 1) {
+    let n = 0;
+    for (let i = Math.max(0, after + 1); i <= upto && i < (chat?.length ?? 0); i++) {
+        const m = chat[i];
+        if (m && !m.is_user && !m.is_system) n++;
+    }
+    return n;
 }
 
 /**
- * 取出回复中的剧情标记
- * @returns {{clean:string, items:{kind:'grow'|'battle', subject:string, text:string}[]}}
+ * 这次同步读哪些楼层：最多 depth 层，以 to 结尾；from 之前的楼层已经同步过，只作参考
+ * @returns {{start:number, from:number, to:number, skipped:number}} skipped：太早、没能读到的未同步楼层数
  */
-export function extractStory(text) {
-    const items = [];
-    const clean = String(text || '').replace(BLOCK_RE, (_, body) => {
-        for (const line of body.split('\n')) {
-            const m = line.trim().match(/^(grow|battle|成长|战斗|关卡)\s+([^|｜]+?)\s*(?:[|｜]\s*(.*))?$/i);
-            if (!m) continue;
-            const kind = /^(battle|战斗|关卡)$/i.test(m[1]) ? 'battle' : 'grow';
-            items.push({ kind, subject: m[2].trim(), text: (m[3] || '').trim() });
-        }
-        return '';
-    }).replace(/\n{3,}/g, '\n\n').trim();
-    return { clean, items };
+export function syncWindow({ syncedTo = -1, to, depth = 20, from = null }) {
+    const start = Math.max(0, to - Math.max(1, depth) + 1);
+    let f = Math.max(0, from ?? (syncedTo + 1));
+    const skipped = Math.max(0, start - f);
+    if (f < start) f = start;
+    return { start, from: f, to, skipped };
 }
 
 // ---------------------------------------------------------------- 角色成长：提示词
@@ -90,41 +72,109 @@ function unitSheet(u, types) {
     });
 }
 
+const GROWTH_RULES = [
+    '只修改剧情明确支持的部分：学会新能力就加技能，装备了新武器就改武器和相应属性，修行成长就小幅提高属性；没有发生变化的角色不要输出。',
+    '成长要克制：一次剧情事件一般只让属性提高 1–3 点，新技能的强度与角色现有技能相当；能力要符合世界观设定（世界书与角色设定）。',
+    '新同伴加入时放在 newUnits 里（side 为 player 或 ally），数值参考同等级的已有我方单位。',
+];
+
+/** 字段格式与规则说明（成长与剧情同步共用） */
+function formatRef(profile) {
+    return ['', '## 单位、技能、特质的字段格式', SCHEMA, '', '## 规则说明', ...designRules(profile.rules || {})];
+}
+
+/** 世界观资料与可以修改的单位（成长与剧情同步共用） */
+function profileContext(profile, { scope = 'party', lore = '', character = '' } = {}) {
+    const types = profile.unitTypes || [];
+    const candidates = (profile.units || []).filter(u => u.kind !== 'object' && (scope === 'all' || u.side !== 'enemy'));
+    const ctx = [];
+    if (character) ctx.push('## 角色卡设定', character, '');
+    if (lore) ctx.push('## 世界书（世界观设定）', lore, '');
+    ctx.push(...existingContent(profile), '');
+    ctx.push('## 可以修改的单位（当前完整资料）', ...candidates.map(u => unitSheet(u, types)), '');
+    return ctx;
+}
+
 /**
  * @param {object} profile
  * @param {object} o
- * @param {string} o.hint 剧情标记或用户写的说明，例如「艾琳学会了星落」
+ * @param {string} o.hint 用户写的说明，例如「艾琳学会了星落」
  * @param {'party'|'all'} [o.scope] 可以修改哪些单位
  */
 export function buildGrowthPrompt(profile, { hint = '', scope = 'party', chat = '', lore = '', character = '', previous = '', feedback = '' } = {}) {
-    const types = profile.unitTypes || [];
-    const candidates = (profile.units || []).filter(u => u.kind !== 'object' && (scope === 'all' || u.side !== 'enemy'));
     const system = [
         '你是 SRPG（战棋）的成长设计师。根据剧情的发展，更新资料卡中角色的属性、技能和特质，或者加入新的同伴。',
-        '只修改剧情明确支持的部分：学会新能力就加技能，装备了新武器就改武器和相应属性，修行成长就小幅提高属性；没有发生变化的角色不要输出。',
-        '成长要克制：一次剧情事件一般只让属性提高 1–3 点，新技能的强度与角色现有技能相当；能力要符合世界观设定（世界书与角色设定）。',
-        '新同伴加入时放在 newUnits 里（side 为 player 或 ally），数值参考同等级的已有我方单位。',
+        ...GROWTH_RULES,
         '只输出一个 JSON 对象，不要输出任何解释；可以放在 ```json 代码块中。',
         '',
         '## 输出格式',
         GROWTH_SCHEMA,
         'changes 中写修改后的新数值（不是增量），只写有变化的字段。',
-        '',
-        '## 单位、技能、特质的字段格式',
-        SCHEMA,
-        '',
-        '## 规则说明',
-        ...designRules(profile.rules || {}),
+        ...formatRef(profile),
     ].join('\n');
-    const ctx = [];
-    if (character) ctx.push('## 角色卡设定', character, '');
-    if (lore) ctx.push('## 世界书（世界观设定）', lore, '');
+    const ctx = profileContext(profile, { scope, lore, character });
     if (chat) ctx.push('## 最近的剧情（聊天记录，越靠后越新）', chat, '');
-    ctx.push(...existingContent(profile), '');
-    ctx.push('## 可以修改的单位（当前完整资料）', ...candidates.map(u => unitSheet(u, types)), '');
     ctx.push('## 本次要处理的剧情事件', hint.trim() || '根据最近的剧情，找出我方角色发生的成长或变化。');
     if (previous) ctx.push('', '## 上一版修改', previous, '', '## 修改意见', feedback.trim() || '请改进上一版。', '请输出修改后的完整 JSON。');
     return { system, user: ctx.join('\n') };
+}
+
+// ---------------------------------------------------------------- 剧情同步：提示词与解析
+
+/**
+ * 剧情同步：插件 LLM 读一段聊天记录，找出角色成长、即将开始的战斗和战场变化。
+ * 聊天 AI 不需要写任何标记，插件与聊天互不干扰。
+ * @param {object} o
+ * @param {string} o.before 已经同步过的楼层（只作参考）
+ * @param {string} o.fresh 这次要同步的楼层
+ * @param {boolean} [o.allowBattle] 允许提出剧情关卡（已有进行中的战斗时为 false）
+ * @param {string} [o.battle] 进行中战斗的战场信息
+ * @param {string} [o.commands] 战场变化的写法（commandGuide）；为空时不提出战场变化
+ */
+export function buildSyncPrompt(profile, { before = '', fresh = '', lore = '', character = '', allowBattle = true, battle = '', commands = '', scope = 'party' } = {}) {
+    const tasks = ['1. 角色成长（growth）：我方角色学会了新能力或技能、得到或失去装备、实力成长或受到长期削弱、新的同伴加入我方。'];
+    if (allowBattle) tasks.push(`${tasks.length + 1}. 剧情关卡（battle）：剧情即将进入一场需要在战棋棋盘上进行的战斗（双方已经对峙、即将开打）。只是提到、回忆或已经结束的战斗不算。`);
+    if (commands) tasks.push(`${tasks.length + 1}. 战场变化（battleChanges）：战斗进行中，剧情本身让战场发生了常规攻击与技能之外的变化（落石、喝下药水、援军赶到、桥被砍断等）。`);
+    const system = [
+        '你是 SRPG（战棋）插件的剧情同步助手。你会读到一段角色扮演的聊天记录，从中找出需要同步到战棋资料的变化。你不参与对话，也不续写剧情。',
+        '需要找出的变化：',
+        ...tasks,
+        '只处理「新的剧情」；「之前的剧情」只用来理解上下文，那里的事件已经同步过，不要重复。资料中已经有的能力、装备、同伴不要重复添加。',
+        ...GROWTH_RULES,
+        '没有变化时对应字段留空；绝大多数对话都没有变化，不要为了输出而编造。',
+        '只输出一个 JSON 对象，不要输出任何解释；可以放在 ```json 代码块中。',
+        '',
+        '## 输出格式',
+        '{',
+        '  "summary": "一句话说明新的剧情里与战棋有关的变化，没有就写“无”",',
+        `  "growth": ${GROWTH_SCHEMA.replace(/\n/g, '\n  ')}${allowBattle || commands ? ',' : ''}`,
+        allowBattle ? `  "battle": null 或 { "place": "战斗地点", "summary": "敌人是谁、我方哪些角色出场、局势如何（一两句话）" }${commands ? ',' : ''}` : null,
+        commands ? '  "battleChanges": ["指令", …]' : null,
+        '}',
+        'growth.changes 中写修改后的新数值（不是增量），只写有变化的字段；没有成长时 growth 写 {"updates": [], "newUnits": []}。',
+        commands ? ['', commands].join('\n') : null,
+        ...formatRef(profile),
+    ].filter(x => x != null).join('\n');
+    const ctx = profileContext(profile, { scope, lore, character });
+    if (battle) ctx.push('## 进行中的战斗（战场状态由战斗系统计算）', battle, '');
+    if (before) ctx.push('## 之前的剧情（已经同步过，只作参考）', before, '');
+    ctx.push('## 新的剧情（只处理这一部分）', fresh || '（无）');
+    return { system, user: ctx.join('\n') };
+}
+
+/**
+ * 解析剧情同步的回复
+ * @returns {{summary:string, growth:object|null, battle:{subject:string, text:string}|null, commands:string[]}}
+ */
+export function normalizeSync(raw) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    const g = r.growth && typeof r.growth === 'object' ? r.growth : (r.updates || r.newUnits ? r : null);
+    const growth = g && (arr(g.updates).length || arr(g.newUnits ?? g.units).length) ? g : null;
+    const bt = r.battle && typeof r.battle === 'object' ? r.battle : null;
+    const battle = bt && (str(bt.place) || str(bt.summary)) ? { subject: str(bt.place) || '剧情战斗', text: str(bt.summary) } : null;
+    const commands = arr(r.battleChanges).map(c => str(typeof c === 'string' ? c : c?.command)).filter(Boolean);
+    const summary = str(r.summary).replace(/^无[。.]?$/, '');
+    return { summary, growth, battle, commands };
 }
 
 // ---------------------------------------------------------------- 角色成长：校验与差异

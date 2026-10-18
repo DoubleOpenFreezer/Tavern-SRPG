@@ -131,7 +131,7 @@ export function renderSettingsTab(app, root) {
 
         unitLoreSection(app, on),
         h('div.tsrpg-section-title', h('i.fa-solid.fa-robot'), ' ', 'LLM 影响战场'),
-        h('div.tsrpg-muted', 'LLM 不会直接改数值：它要么从战斗系统列出的合法行动里做选择，要么写出指令，由战斗系统校验后再执行。'),
+        h('div.tsrpg-muted', '这里的 LLM 都是「AI 设计」页「API 设置」中配置的模型，在后台单独调用，不经过聊天，也不会要求聊天 AI 输出任何东西。LLM 不会直接改数值：它要么从战斗系统列出的合法行动里做选择，要么提出指令，由战斗系统校验后再执行。'),
 
         h('div.tsrpg-label', '① LLM 指挥官：由 LLM 为 AI 单位选择行动'),
         h('div.tsrpg-row',
@@ -145,20 +145,19 @@ export function renderSettingsTab(app, root) {
             h('small.tsrpg-muted', '结束回合时，战斗系统列出每个单位的合法行动（攻击谁、用什么技能、向谁前进、待命），一次后台生成让 LLM 全部选好，再由系统执行。选不出来或行动已失效时，自动交给内置 AI。'),
         ),
 
-        h('div.tsrpg-label', '② 剧情指令：LLM 在回复末尾用 <srpg> 指令块改变战场'),
+        h('div.tsrpg-label', '② 战场变化：剧情同步时，从剧情中读出常规攻击与技能之外的战场变化（落石、喝药、援军赶到、桥被砍断……）'),
         h('div.tsrpg-grid3',
-            h('div', checkbox('启用剧情指令', s.llm.commands, on(s.llm, 'commands', () => app.updateInjection()))),
-            field('收到指令时', select([['confirm', '列在面板中，由我确认'], ['auto', '自动应用']], s.llm.mode, on(s.llm, 'mode'))),
-            h('div', checkbox('从聊天消息中移除指令块', s.llm.hideBlock, on(s.llm, 'hideBlock'))),
-        ),
+            h('div', checkbox('允许剧情同步提出战场变化', s.llm.commands, on(s.llm, 'commands', () => app.render()))),
+            field('提出变化时', select([['confirm', '列在战场页，由我确认'], ['auto', '自动应用']], s.llm.mode, on(s.llm, 'mode'))),
+            h('div', s.designer.story.enabled ? null : h('small.tsrpg-warn', '需要先在「AI 设计」页开启剧情同步'))),
         h('div.tsrpg-checks', Object.entries(COMMANDS).map(([id, c]) =>
-            checkbox(c.label, s.llm.allow[id] !== false, v => { s.llm.allow[id] = v; app.save(); app.updateInjection(); }, c.syntax))),
+            checkbox(c.label, s.llm.allow[id] !== false, v => { s.llm.allow[id] = v; app.save(); }, c.syntax))),
         h('div.tsrpg-row',
             h('span.tsrpg-label', '单条指令 HP 变化上限 %'),
-            h('div', { style: { width: '80px' } }, numInput(s.llm.maxChangePct, on(s.llm, 'maxChangePct', () => app.updateInjection()), { min: 1, max: 100 })),
-            checkbox('允许指令直接击败单位', s.llm.allowKill, on(s.llm, 'allowKill', () => app.updateInjection())),
+            h('div', { style: { width: '80px' } }, numInput(s.llm.maxChangePct, on(s.llm, 'maxChangePct'), { min: 1, max: 100 })),
+            checkbox('允许指令直接击败单位', s.llm.allowKill, on(s.llm, 'allowKill')),
         ),
-        h('small.tsrpg-muted', '开启后，指令的写法会附在注入的战场信息末尾（可用「查看 LLM 看到的内容」检查）。重新生成、滑动或删除这条回复时，它造成的改动会自动撤回；如果之后棋盘又有别的改动，则不会自动撤回。'),
+        h('small.tsrpg-muted', '战斗进行中，剧情同步会把战场状态和这些规则一起交给插件模型。重新生成、滑动或删除同步读到的最后一楼时，它造成的改动会自动撤回；如果之后棋盘又有别的改动，则不会自动撤回。'),
 
         h('div.tsrpg-section-title', h('i.fa-solid.fa-display'), ' ', '界面'),
         h('div.tsrpg-grid4',

@@ -83,7 +83,8 @@ export function clear(el) {
 }
 
 export function toast(type, msg) {
-    if (window.toastr?.[type]) window.toastr[type](msg, 'Tavern-SRPG');
+    const toastr = globalThis.window?.toastr;
+    if (toastr?.[type]) toastr[type](msg, 'Tavern-SRPG');
     else console.log(`[Tavern-SRPG] ${msg}`);
 }
 

@@ -54,7 +54,7 @@ function pauseButton(app, b) {
 
 function renderPaused(app, root, b) {
     add(root, h('div.tsrpg-mission', `战斗已暂停：${b.mapName} · 第 ${b.turn} 回合 · ${PHASE[b.phase] || b.phase}`),
-        h('div.tsrpg-muted', '棋盘、HP、技能冷却及待发送行动已保留。暂停期间不注入战场信息、不处理剧情指令；关闭窗口或刷新后仍可继续。'),
+        h('div.tsrpg-muted', '棋盘、HP、技能冷却及待发送行动已保留。暂停期间不注入战场信息、不同步战场变化；关闭窗口或刷新后仍可继续。'),
         h('div.tsrpg-row', button('继续战斗', () => setBattlePaused(app, b, false), { icon: 'fa-play', cls: 'primary' })),
         h('div.tsrpg-board-wrap', renderBoard({ w: b.w, h: b.h, tiles: b.tiles, cell: app.cellFor(b.w, 312, b.h), terrain: id => b.terrains[id] || { color: '#999' }, units: E.alive(b).filter(u => E.visibleTo(b, 'P', u)), marks: fogMarks(b) })));
 }
@@ -1034,7 +1034,7 @@ function hideFogEvents(b, events) {
     return out;
 }
 
-/** LLM 在回复里提议的战场变化，等待确认 */
+/** 剧情同步提出的战场变化，等待确认 */
 function proposalPanel(app, b) {
     const p = b.llm?.proposals;
     if (!p) return null;
@@ -1045,7 +1045,7 @@ function proposalPanel(app, b) {
         ui.keepFor = p;
     }
     return h('div.tsrpg-proposals',
-        h('div.tsrpg-section-title', h('i.fa-solid.fa-scroll'), ` LLM 提议的战场变化（第 ${p.mesId + 1} 楼）`),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-scroll'), ` 剧情同步提出的战场变化（读到第 ${p.mesId} 楼）`),
         rows.map((r, i) => h(`label.tsrpg-proposal${r.ok ? '' : '.bad'}`,
             h('input', { type: 'checkbox', checked: ui.keep[i], disabled: !r.ok, onchange: e => { ui.keep[i] = e.target.checked; } }),
             h('span',
@@ -1055,7 +1055,7 @@ function proposalPanel(app, b) {
         h('div.tsrpg-row',
             button('应用勾选的变化', () => acceptProposals(app, b, ui.keep), { icon: 'fa-check', cls: 'primary', disabled: !rows.some(r => r.ok) }),
             button('全部拒绝', () => rejectProposals(app, b), { icon: 'fa-xmark' })),
-        h('small.tsrpg-muted', '预览按顺序推演；应用后可以用「撤销」撤回。重新生成这条回复时，已应用的变化会自动撤回。'),
+        h('small.tsrpg-muted', `预览按顺序推演；应用后可以用「撤销」撤回。重新生成或删除第 ${p.mesId} 楼时，已应用的变化会自动撤回。`),
     );
 }
 

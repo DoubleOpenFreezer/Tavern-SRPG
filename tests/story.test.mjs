@@ -2,29 +2,46 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { sampleProfile, makeMap } from '../src/defaults.js';
 import * as E from '../src/engine.js';
-import { extractStory, storyGuide, buildGrowthPrompt, normalizeGrowth, applyGrowth, revertGrowth, growthLines, growthIds, growthSummary } from '../src/story.js';
+import { countReplies, syncWindow, buildSyncPrompt, normalizeSync, buildGrowthPrompt, normalizeGrowth, applyGrowth, revertGrowth, growthLines, growthIds, growthSummary } from '../src/story.js';
 import { buildDesignPrompt, parseDesignReply } from '../src/designer.js';
 
-test('剧情标记：解析成长与关卡，从正文中移除；没有标记时原样返回', () => {
-    const text = '艾琳合上古书，掌心浮现出星光。\n\n<srpg-story>\ngrow 艾琳 | 学会了「星落」\n成长 骑士｜换上了圣剑\nbattle 废弃神殿 | 暗影教团伏击\n乱写的一行\n</srpg-story>';
-    const { clean, items } = extractStory(text);
-    assert.equal(clean, '艾琳合上古书，掌心浮现出星光。');
-    assert.deepEqual(items, [
-        { kind: 'grow', subject: '艾琳', text: '学会了「星落」' },
-        { kind: 'grow', subject: '骑士', text: '换上了圣剑' },
-        { kind: 'battle', subject: '废弃神殿', text: '暗影教团伏击' },
-    ]);
-    assert.deepEqual(extractStory('普通的回复'), { clean: '普通的回复', items: [] });
+test('同步范围：按 AI 回复数计轮；读取窗口以目标楼层结尾，已同步的楼层只作参考', () => {
+    const chat = [{ is_user: false }, { is_user: true }, { is_user: false }, { is_system: true }, { is_user: true }, { is_user: false }];
+    assert.equal(countReplies(chat), 3);
+    assert.equal(countReplies(chat, 0), 2);
+    assert.equal(countReplies(chat, 2, 4), 0);
+    assert.deepEqual(syncWindow({ syncedTo: 4, to: 30, depth: 20 }), { start: 11, from: 11, to: 30, skipped: 6 });
+    assert.deepEqual(syncWindow({ syncedTo: 25, to: 30, depth: 20 }), { start: 11, from: 26, to: 30, skipped: 0 });
+    assert.deepEqual(syncWindow({ to: 5, depth: 20 }), { start: 0, from: 0, to: 5, skipped: 0 });
+    assert.equal(syncWindow({ syncedTo: 25, to: 30, depth: 20, from: 15 }).from, 15, '手动指定起点');
 });
 
-test('注入说明：列出我方角色；战斗进行中不提示开战标记', () => {
+test('同步提示词：只处理新的剧情；战斗中才附上战场与指令写法；已有战斗时不提出关卡', () => {
     const p = sampleProfile();
-    const guide = storyGuide(p);
-    assert.match(guide, /grow <角色名>/);
-    assert.match(guide, /battle <地点>/);
-    assert.match(guide, /当前我方角色：骑士、法师、斥候/);
-    assert.doesNotMatch(storyGuide(p, { inBattle: true }), /battle <地点>/);
-    assert.doesNotMatch(storyGuide(p, { battle: false }), /battle <地点>/);
+    const { system, user } = buildSyncPrompt(p, { before: '#1 旧事', fresh: '#2 艾琳学会了星落', lore: '星界设定', character: '主角设定' });
+    assert.match(system, /不参与对话，也不续写剧情/);
+    assert.match(system, /"battle": null 或/);
+    assert.doesNotMatch(system, /battleChanges/);
+    assert.match(user, /## 世界书（世界观设定）\n星界设定/);
+    assert.match(user, /## 之前的剧情（已经同步过，只作参考）\n#1 旧事/);
+    assert.ok(user.trim().endsWith('## 新的剧情（只处理这一部分）\n#2 艾琳学会了星落'));
+    assert.ok(!user.includes('哥布林弓手"'), '默认不包含敌人的完整资料');
+    const inBattle = buildSyncPrompt(p, { fresh: '#9 落石', allowBattle: false, battle: '战场状态', commands: '## 战场变化（battleChanges）的写法' });
+    assert.match(inBattle.system, /"battleChanges": \["指令", …\]/);
+    assert.doesNotMatch(inBattle.system, /"battle": null 或/);
+    assert.match(inBattle.user, /## 进行中的战斗（战场状态由战斗系统计算）\n战场状态/);
+});
+
+test('解析同步回复：空的成长与“无”视为没有变化，指令可以是字符串或对象', () => {
+    assert.deepEqual(normalizeSync({ summary: '无', growth: { updates: [], newUnits: [] }, battle: null, battleChanges: [] }),
+        { summary: '', growth: null, battle: null, commands: [] });
+    const r = normalizeSync({ summary: '神殿开战', growth: { updates: [{ unit: '法师' }] }, battle: { place: '废弃神殿', summary: '暗影教团伏击' }, battleChanges: ['damage E1 3 落石', { command: 'heal P1 2' }, ''] });
+    assert.equal(r.summary, '神殿开战');
+    assert.equal(r.growth.updates.length, 1);
+    assert.deepEqual(r.battle, { subject: '废弃神殿', text: '暗影教团伏击' });
+    assert.deepEqual(r.commands, ['damage E1 3 落石', 'heal P1 2']);
+    assert.equal(normalizeSync({ updates: [{ unit: '法师' }] }).growth.updates.length, 1, '直接写成长格式也能识别');
+    assert.equal(normalizeSync(null).growth, null);
 });
 
 const reply = JSON.stringify({

@@ -117,6 +117,11 @@
 .tsrpg-tab.active { color: var(--tsrpg-fg); background: var(--tsrpg-accent-soft); font-weight: 600; }
 .tsrpg-tab.active i { color: var(--tsrpg-accent); }
 .tsrpg-panel .tsrpg-icon-btn { width: 32px !important; height: 30px; padding: 0 !important; }
+.tsrpg-panel .tsrpg-sync-btn { position: relative; overflow: visible; }
+.tsrpg-panel .tsrpg-sync-btn[hidden] { display: none !important; }
+.tsrpg-panel .tsrpg-sync-btn.working { color: var(--tsrpg-accent); border-color: var(--tsrpg-accent); }
+.tsrpg-sync-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--tsrpg-accent); color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: bold; pointer-events: none; }
+.tsrpg-sync-badge[hidden] { display: none; }
 
 .tsrpg-body { flex: 1; overflow: auto; padding: 12px 14px; position: relative; }
 
@@ -642,6 +647,11 @@ details[open].tsrpg-design-box > :not(summary), details[open].tsrpg-side-card > 
 .tsrpg-design-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .tsrpg-design-warnings ul { margin: 4px 0 0 18px; padding: 0; font-size: 12.5px; }
 .tsrpg-design-result { border-color: color-mix(in srgb, var(--tsrpg-accent) 45%, transparent); }
+.tsrpg-sync-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--tsrpg-border); border-radius: var(--tsrpg-radius-sm); }
+.tsrpg-sync-progress { font-weight: 600; }
+.tsrpg-sync-range { align-items: center; gap: 6px; margin: 0; }
+.tsrpg-sync-num { width: 76px; }
+.tsrpg-sync-num input { margin: 0; }
 .tsrpg-story-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .tsrpg-story-item { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--tsrpg-border); border-radius: var(--tsrpg-radius-sm); background: color-mix(in srgb, var(--tsrpg-fg) 2.5%, transparent); }
 .tsrpg-story-item.s-ready { border-color: var(--tsrpg-accent); background: var(--tsrpg-accent-soft); }

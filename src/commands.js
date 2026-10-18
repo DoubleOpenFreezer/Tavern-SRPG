@@ -1,4 +1,4 @@
-// LLM 在回复中写的战场指令：<srpg> … </srpg>
+// 战场指令：剧情同步时，插件 LLM 从剧情中读出的战场变化（damage E1 5 落石 …）
 // 解析 → 校验 → 应用。全部是纯逻辑，不依赖 SillyTavern。
 import {
     EFFECTS, alive, getUnit, terrainAt, enterCost, unitAt, inBounds, effectLabel, makeBattleUnit, checkResult,
@@ -20,16 +20,7 @@ export const COMMANDS = {
 
 const NAME_TO_CMD = new Map(Object.entries(COMMANDS).flatMap(([id, c]) => c.names.map(n => [n.toLowerCase(), id])));
 
-const BLOCK_RE = /<srpg>([\s\S]*?)<\/srpg>/gi;
-
-/** 从回复中取出指令块，返回去掉指令块后的正文 */
-export function extractBlocks(text) {
-    const blocks = [];
-    const clean = String(text || '').replace(BLOCK_RE, (_, body) => { blocks.push(body); return ''; }).replace(/\n{3,}/g, '\n\n').trim();
-    return { clean, blocks };
-}
-
-/** 把指令块解析成指令列表；无法识别的行会带上 error */
+/** 把指令文字（每行一条）解析成指令列表；无法识别的行会带上 error */
 export function parseCommands(blockText) {
     const out = [];
     for (let line of String(blockText || '').split('\n')) {
@@ -236,17 +227,12 @@ export function previewCommands(b, cmds, opt) {
     });
 }
 
-/** 写进战场信息里，告诉 LLM 怎样写指令 */
-export function commandGuide(opt, labels = {}) {
+/** 写进剧情同步的提示词：告诉插件 LLM 怎样把剧情中的战场变化写成 battleChanges */
+export function commandGuide(opt) {
     const allowed = Object.entries(COMMANDS).filter(([id]) => opt.allow?.[id] !== false);
     if (!allowed.length) return '';
     const effects = Object.entries(EFFECTS).filter(([, d]) => !d.instant || d.name === '驱散减益')
         .map(([id, d]) => `${id}（${d.name}${d.noValue ? '' : `，数值单位：${d.unit}`}）`).join('、');
-    const lines = [
-        '## 你可以通过指令影响战场',
-        '当剧情（而不是常规的攻击与技能）让战场发生变化时，在回复的最后附上指令块，战斗系统会据此修改棋盘。例如：',
-        '<srpg>',
-    ];
     const examples = {
         damage: 'damage E1 5 被落石砸中',
         heal: 'heal P2 8 喝下了药水',
@@ -258,12 +244,15 @@ export function commandGuide(opt, labels = {}) {
         terrain: 'terrain 7 4 河流 木桥被砍断',
         end: 'end victory 敌军首领投降',
     };
-    for (const [id] of allowed) lines.push(examples[id]);
-    lines.push('</srpg>');
-    lines.push(`可用指令：${allowed.map(([, c]) => c.syntax).join('；')}。`);
-    lines.push('单位写编号（P1、E2）或名字；坐标 x 为列、y 为行，从 1 开始。');
+    const lines = [
+        '## 战场变化（battleChanges）的写法',
+        '新的剧情里，如果剧情本身（而不是常规的攻击与技能）让战场发生了变化，把每个变化写成一条指令字符串，放进 battleChanges 数组，例如：',
+        JSON.stringify(allowed.map(([id]) => examples[id])),
+        `可用指令：${allowed.map(([, c]) => c.syntax).join('；')}。`,
+        '单位写编号（P1、E2）或名字；坐标 x 为列、y 为行，从 1 开始。',
+    ];
     if (allowed.some(([id]) => id === 'status' || id === 'unstatus')) lines.push(`可用效果：${effects}。`);
     lines.push(`单条指令的扣血 / 回复不超过目标最大 HP 的 ${opt.maxChangePct ?? 50}%${opt.allowKill ? '' : '，且指令不能直接击败单位（最多扣到 1 HP）'}。`);
-    lines.push('普通的攻击、技能和移动由玩家在棋盘上操作、由战斗系统计算，不要用指令代替；剧情没有改变战场时，不要输出指令块。');
+    lines.push('战斗消息里由战斗系统结算的攻击、技能、移动、伤害已经生效，不要再写成指令；只描写了气氛、没有改变战场时，battleChanges 留空。');
     return lines.join('\n');
 }

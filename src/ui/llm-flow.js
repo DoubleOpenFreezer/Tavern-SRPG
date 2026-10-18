@@ -1,9 +1,10 @@
-// LLM 影响战场：处理回复中的指令、待确认的提议、重新生成时撤回、LLM 指挥官
+// LLM 影响战场：剧情同步提出的战场变化、待确认的提议、重新生成时撤回、LLM 指挥官（都用插件配置的模型，不经过聊天）
 import * as E from '../engine.js';
 import * as ST from '../st.js';
 import { toast } from './dom.js';
 import { formatEvent } from '../narrator.js';
-import { extractBlocks, parseCommands, applyCommand, previewCommands, settle } from '../commands.js';
+import { applyCommand, previewCommands, settle } from '../commands.js';
+import { designerGenerate } from '../ai-api.js';
 import { buildCommanderPrompt, parseCommanderReply } from '../commander.js';
 
 export function commandOptions(app) {
@@ -16,44 +17,20 @@ function llmState(b) {
     return b.llm;
 }
 
-// ---------------------------------------------------------------- 回复中的指令
+// ---------------------------------------------------------------- 剧情同步提出的战场变化
 
-/** 收到 AI 回复时：取出指令块，按设置自动应用或等待确认 */
-export async function handleMessage(app, mesId, type) {
-    const s = app.settings;
-    if (!s.llm.commands || type === 'first_message') return;
-    let b = ST.getBattle();
-    if (!b?.active || b.paused) return;
-    const msg = ST.getMessage(mesId);
-    if (!msg || msg.is_user || msg.is_system) return;
-    const chatId = ST.currentChatId();
-
-    // 同一条消息被重新生成 / 滑动：先撤回上一版回复造成的改动（续写不撤回）
-    if (type !== 'continue') {
-        revertMessage(app, mesId);
-        b = ST.getBattle();
-    }
-    const { clean, blocks } = extractBlocks(msg.mes);
-    const st = llmState(b);
-    if (!blocks.length) {
-        if (st.proposals?.mesId === mesId && type !== 'continue') { st.proposals = null; ST.saveBattle(); app.render(); }
-        return;
-    }
-    if (s.llm.hideBlock) await ST.rewriteMessage(mesId, clean);
-    if (b.paused || ST.getBattle() !== b || ST.currentChatId() !== chatId) return;
-    const cmds = blocks.flatMap(parseCommands);
-    if (!cmds.length) return;
-
-    if (s.llm.mode === 'auto') {
-        applyCommands(app, b, cmds, mesId);
-    } else {
-        const prev = st.proposals?.mesId === mesId && type === 'continue' ? st.proposals.cmds : [];
-        st.proposals = { mesId, cmds: [...prev, ...cmds] };
-        ST.saveBattle();
-        toast('info', `LLM 提议了 ${cmds.length} 项战场变化，点击悬浮按钮在战场页确认。`);
-        if (app.isOpen && app.settings.ui.tab !== 'battle') app.setTab('battle');
-        else app.render();
-    }
+/**
+ * 剧情同步读出的战场变化：按设置自动应用，或列在战场页等待确认。
+ * mesId 是这次同步读到的最后一楼：重新生成、滑动或删除这一楼时，自动撤回。
+ */
+export function proposeCommands(app, b, cmds, mesId) {
+    if (!cmds.length || ST.getBattle() !== b || b.paused) return;
+    if (app.settings.llm.mode === 'auto') return applyCommands(app, b, cmds, mesId);
+    llmState(b).proposals = { mesId, cmds };
+    ST.saveBattle();
+    toast('info', `剧情同步提出了 ${cmds.length} 项战场变化，点击悬浮按钮在战场页确认。`);
+    if (app.isOpen && app.settings.ui.tab !== 'battle') app.setTab('battle');
+    else app.render();
 }
 
 /** 应用一组指令；记录应用前的快照，以便重新生成时撤回 */
@@ -139,18 +116,20 @@ export function handleDeleted(app) {
 
 // ---------------------------------------------------------------- LLM 指挥官
 
+const COMMANDER_SYSTEM = '你是 SRPG 战棋中 AI 阵营的指挥官。结合剧情、角色的性格与动机和战场局势，为每个单位选择行动；严格按照要求的格式回复，不要输出其他内容。';
+
+/** 用插件配置的模型（「AI 设计」页）选择行动：不经过聊天，不会和聊天 AI 的生成互相干扰 */
 async function askCommander(app, b, side, group) {
     const s = app.settings;
-    // 自动注入已经包含完整战场信息；关闭注入时把信息放进指挥提示里
-    const context = s.inject.enabled ? '' : app.battleContext();
+    const story = ST.recentChat(6, null, 4000);
+    const context = [app.battleContext(), story ? `## 最近的剧情\n${story}` : ''].filter(Boolean).join('\n\n');
     const { prompt, options } = buildCommanderPrompt(b, side, group, app.data.rules, { limit: s.llm.options, context, intent: s.llm.intent });
     app.bs.busy = `${E.SIDE_NAMES[side]}指挥官（LLM）正在思考……`;
     app.render();
-    await app.updateInjection();
     try {
-        const reply = await ST.quietGenerate(ST.substitute(prompt));
-        console.debug('[Tavern-SRPG] 指挥官回复', reply);
-        const picks = parseCommanderReply(b, reply);
+        const { text } = await designerGenerate({ ...s.designer, maxTokens: Math.min(Number(s.designer.maxTokens) || 2000, 2000) }, { system: COMMANDER_SYSTEM, user: ST.substitute(prompt) });
+        console.debug('[Tavern-SRPG] 指挥官回复', text);
+        const picks = parseCommanderReply(b, text);
         if (!picks.size) toast('warning', '没能从 LLM 的回复中读出指挥，改由战斗系统决定。');
         return { picks, options };
     } catch (err) {
