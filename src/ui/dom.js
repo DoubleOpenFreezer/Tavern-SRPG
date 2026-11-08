@@ -1,4 +1,5 @@
 // DOM 小工具 + 棋盘渲染
+import { tempHp, terrainEffectSummary } from '../engine.js';
 
 /**
  * h('div.cls#id', {onclick, style:{}, ...attrs}, ...children)
@@ -169,7 +170,7 @@ export function renderBoard(o) {
             const key = `${x},${y}`;
             const cell = h('div.tsrpg-cell', {
                 'data-x': x, 'data-y': y,
-                title: `(${x + 1},${y + 1}) ${t.name}${Number(t.enterDamage) || Number(t.enterDamagePct) ? ` · 落脚伤害 ${Number(t.enterDamage) || 0} + ${Number(t.enterDamagePct) || 0}%最大HP` : ''}${Number(t.turnDamage) || Number(t.turnDamagePct) ? ` · 回合伤害 ${Number(t.turnDamage) || 0} + ${Number(t.turnDamagePct) || 0}%最大HP` : ''}`,
+                title: `(${x + 1},${y + 1}) ${t.name}${Number(t.enterDamage) || Number(t.enterDamagePct) ? ` · 落脚伤害 ${Number(t.enterDamage) || 0} + ${Number(t.enterDamagePct) || 0}%最大HP` : ''}${Number(t.turnDamage) || Number(t.turnDamagePct) ? ` · 回合伤害 ${Number(t.turnDamage) || 0} + ${Number(t.turnDamagePct) || 0}%最大HP` : ''}${terrainEffectSummary(t) ? ` · 落脚效果 ${terrainEffectSummary(t)}` : ''}`,
                 style: { background: t.color, color: contrast(t.color) },
             }, t.symbol ? h('span.tsrpg-sym', t.symbol) : null);
             for (const m of o.marks?.get(key) || []) cell.classList.add(m);
@@ -212,6 +213,17 @@ function numberKind(text) {
 
 const hpPct = (u, hp) => `${Math.max(0, Math.min(100, (hp / Math.max(1, u.maxHp)) * 100))}%`;
 
+/** 临时HP画在血条 HP 之后；超出最大HP的部分从左端叠在 HP 上面 */
+export function tempSegments(u, cls = 'temp') {
+    const temp = u.hp > 0 ? tempHp(u) : 0;
+    if (!temp) return [];
+    const max = Math.max(1, u.maxHp), room = Math.max(0, max - u.hp), over = Math.min(max, temp - room);
+    return [
+        room > 0 ? h(`div.${cls}`, { style: { left: hpPct(u, u.hp), width: hpPct(u, Math.min(temp, room)) } }) : null,
+        over > 0 ? h(`div.${cls}.over`, { style: { left: '0%', width: hpPct(u, over) } }) : null,
+    ].filter(Boolean);
+}
+
 /**
  * @param {{drainFrom?: number|null, previewHp?: number}} [fx]
  *   drainFrom：回放时扣血前的 HP，血条显示掉血动画；previewHp：预计结算后的 HP，闪烁显示将损失的部分
@@ -221,10 +233,10 @@ export function renderToken(u, selected = false, fx = {}) {
     const el = h(`div.tsrpg-token.side-${u.side}`, {
         'data-uid': u.uid || '',
         style: { background: color, color: contrast(color) },
-        title: u.name + (u.maxHp ? ` HP ${u.hp}/${u.maxHp}` : ''),
+        title: u.name + (u.maxHp ? ` HP ${u.hp}/${u.maxHp}${tempHp(u) && u.hp > 0 ? ` + 临时HP ${tempHp(u)}` : ''}` : ''),
     }, h('span.tsrpg-token-icon', u.icon || (u.name || '?').slice(0, 1)));
     if (u.maxHp) {
-        const bar = h('div.tsrpg-hpbar', h('div.fill', { style: { width: hpPct(u, u.hp) } }));
+        const bar = h('div.tsrpg-hpbar', h('div.fill', { style: { width: hpPct(u, u.hp) } }), ...tempSegments(u));
         const from = fx.drainFrom;
         if (from != null && from > u.hp) bar.append(h('div.trail', { style: { left: hpPct(u, u.hp), width: hpPct(u, from - u.hp) } }));
         if (from != null && from < u.hp) bar.append(h('div.gain', { style: { left: hpPct(u, from), width: hpPct(u, u.hp - from) } }));
@@ -240,7 +252,8 @@ export function renderToken(u, selected = false, fx = {}) {
         if (st.some(x => x.type === 'taunt')) icons.push(h('i.fa-solid.fa-bullhorn', { title: '嘲讽' }));
         if (st.some(x => x.type === 'stun')) icons.push(h('i.fa-solid.fa-face-dizzy', { title: '眩晕' }));
         if (st.some(x => x.type === 'poison')) icons.push(h('i.fa-solid.fa-skull-crossbones', { title: '中毒' }));
-        if (st.some(x => /_up$|regen/.test(x.type))) icons.push(h('span.up', '▲'));
+        if (st.some(x => x.type === 'seal_defend' || x.type === 'seal_counter')) icons.push(h('i.fa-solid.fa-lock', { title: st.filter(x => x.type.startsWith('seal_')).map(x => x.type === 'seal_defend' ? '封印防御' : '封印反击').join('、') }));
+        if (st.some(x => /_up$|regen|temp_hp/.test(x.type))) icons.push(h('span.up', '▲'));
         if (st.some(x => /_down$/.test(x.type))) icons.push(h('span.down', '▼'));
         el.append(h('span.tsrpg-status', icons));
     }

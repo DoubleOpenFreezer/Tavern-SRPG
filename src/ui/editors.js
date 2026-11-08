@@ -1,7 +1,7 @@
 // 单位 / 地形 / 地图 编辑器
 import { h, clear, toast, button, select, field, numInput, textInput, textArea, checkbox, renderBoard, renderToken, contrast, groupSections } from './dom.js';
-import { makeUnit, makeTrait, makeSkill, makeMap, makeWave, makeUnitType, unitTypePreset, uid, DEFAULT_TERRAINS } from '../defaults.js';
-import { MISSION_NAMES, EFFECTS, TRAIT_EFFECTS, traitSummary, normalizeSkill, matchup, matchupLabel, isNeutralMatchup, battleUnitTypes, blocksSight, DEFAULT_VISION } from '../engine.js';
+import { makeUnit, makeTrait, makeSkill, makeMap, makeWave, makeUnitType, unitTypePreset, uid } from '../defaults.js';
+import { MISSION_NAMES, EFFECTS, TRAIT_EFFECTS, TERRAIN_EFFECTS, traitSummary, normalizeSkill, matchup, matchupLabel, isNeutralMatchup, battleUnitTypes, blocksSight, DEFAULT_VISION } from '../engine.js';
 import * as ST from '../st.js';
 
 const SIDES = [['player', '我方'], ['ally', '友军'], ['enemy', '敌方']];
@@ -204,16 +204,16 @@ function skillEditor(app, u) {
 }
 
 /** 预设效果下拉框（按 立即 / 增益 / 减益 分组），效果类型只能从预设中选择 */
-function effectSelect(value, onchange) {
+function effectSelect(value, onchange, defs = EFFECTS) {
     const groups = {};
-    for (const [id, def] of Object.entries(EFFECTS)) (groups[def.group] ||= []).push([id, def.name]);
+    for (const [id, def] of Object.entries(defs)) (groups[def.group] ||= []).push([id, def.name]);
     const el = h('select.text_pole', { onchange: e => onchange(e.target.value) },
         Object.entries(groups).map(([g, opts]) => h('optgroup', { label: g }, opts.map(([id, name]) => h('option', { value: id }, name)))));
     el.value = value;
     return el;
 }
 
-function effectRow(app, sk, e) {
+function effectRow(app, sk, e, defs = EFFECTS) {
     const def = EFFECTS[e.type] || {};
     const save = () => { app.save(); };
     return h('div.tsrpg-effect',
@@ -223,7 +223,7 @@ function effectRow(app, sk, e) {
             e.value = EFFECTS[v].value ?? 0;
             e.turns = EFFECTS[v].instant ? 0 : (e.turns || 2);
             app.save(); app.render();
-        }),
+        }, defs),
         def.noValue ? h('span.tsrpg-muted', '—') : h('label.tsrpg-inline',
             numInput(e.value, v => { e.value = v; save(); }, { min: e.type === 'taunt' ? 0 : 1 }), h('small', def.unit || '')),
         def.instant ? h('small.tsrpg-muted', '立即生效') : h('label.tsrpg-inline',
@@ -460,11 +460,6 @@ export function renderTerrainsTab(app, root) {
             const t = { id: uid('ter'), name: '新地形', symbol: '', color: '#a1887f', moveCost: 1, passable: true, flyable: true, defBonus: 0, healPct: 0, desc: '' };
             app.data.terrains.push(t); ed.terrainId = t.id; app.save(); app.render();
         }, { icon: 'fa-plus' }),
-        button('添加熔岩', () => {
-            let lava = app.data.terrains.find(t => t.id === 'lava');
-            if (!lava) { lava = structuredClone(DEFAULT_TERRAINS.find(t => t.id === 'lava')); app.data.terrains.push(lava); app.save(); }
-            ed.terrainId = lava.id; app.render();
-        }, { icon: 'fa-fire' }),
         app.data.terrains.map(t => listItem(t.id === ed.terrainId, () => { ed.terrainId = t.id; app.render(); },
             h('span.tsrpg-swatch', { style: { background: t.color, color: contrast(t.color) } }, t.symbol || ''), h('span', t.name))),
     );
@@ -509,8 +504,11 @@ function terrainForm(app, t) {
             field('回合扣血', numInput(t.turnDamage ?? 0, set('turnDamage'), { min: 0 }), '该单位所属阵营阶段开始时扣血'),
             field('回合扣血 %', numInput(t.turnDamagePct ?? 0, set('turnDamagePct'), { min: 0, max: 100 }), '按最大HP计算，与固定伤害相加'),
         ),
-        checkbox('地形伤害也影响飞行单位', t.damageFlying ?? false, set('damageFlying')),
-        h('small.tsrpg-muted', '地形伤害可致死，不受防御减免；只结算落脚格，不计算沿途经过的格子。'),
+        h('div.tsrpg-section-title', h('i.fa-solid.fa-wand-magic-sparkles'), ' ', '落脚效果'),
+        (t.effects ||= []).length ? t.effects.map(e => effectRow(app, t, e, TERRAIN_EFFECTS)) : h('small.tsrpg-muted', '单位落在此格时（移动终点、传送、召回）获得的效果，例如沼泽「封印防御」、毒雾「中毒」、圣泉「临时HP」。'),
+        h('div.tsrpg-row', button('添加落脚效果', () => { t.effects.push({ type: 'seal_defend', value: 0, turns: 1 }); app.save(); app.render(); }, { icon: 'fa-plus' })),
+        checkbox('地形伤害和落脚效果也影响飞行单位', t.damageFlying ?? false, set('damageFlying')),
+        h('small.tsrpg-muted', '地形伤害可致死，不受防御减免；伤害和落脚效果只结算落脚格，不计算沿途经过的格子。落脚效果的回合数在该单位自己阵营的阶段开始时减 1。'),
         h('div.tsrpg-section-title', h('i.fa-solid.fa-eye'), ' ', '视野（战争迷雾）'),
         h('div.tsrpg-grid3',
             field('视野加成', numInput(t.visionBonus ?? 0, set('visionBonus'), { min: -10, max: 10 }), '站在此格的单位视野增减（格），例如山地 +2'),

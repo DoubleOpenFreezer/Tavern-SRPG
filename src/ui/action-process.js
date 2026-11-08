@@ -11,6 +11,29 @@ export function* actionFrames(before, after, events) {
         : effect(actor, 'm-acting');
     // 扣血 / 回复：血条从原值变化到新值，被击败的单位淡出
     const hpFx = (u, from) => ({ hpFrom: from, ko: from > 0 && u.hp <= 0 });
+    // 临时HP记在状态上：按事件里的剩余量更新显示副本
+    const setTemp = (u, amount) => {
+        if (!u || amount == null) return;
+        const st = (u.statuses ||= []).find(s => s.type === 'temp_hp');
+        if (st) st.amount = amount;
+        else if (amount > 0) u.statuses.push({ type: 'temp_hp', value: 0, turns: 1, amount });
+        u.statuses = u.statuses.filter(s => s.type !== 'temp_hp' || s.amount > 0);
+    };
+    // 落脚效果：同步 HP、临时HP和状态
+    const landFx = (u, fx) => {
+        if (!u || !fx) return;
+        u.hp = fx.hpAfter;
+        setTemp(u, fx.tempAfter);
+        for (const ef of fx.effects || []) {
+            if (ef.failed || ef.heal != null || !ef.turns || ef.type === 'temp_hp') continue;
+            u.statuses = (u.statuses || []).filter(s => s.type !== ef.type).concat({ type: ef.type, value: 0, turns: ef.turns });
+        }
+    };
+    // 显示的伤害数字包括被临时HP抵消的部分
+    const hpText = r => {
+        const delta = r.hpAfter - r.hpBefore - (r.absorbed || 0);
+        return delta ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : '';
+    };
     const frame = (label, effects = [], area = [], duration = 1) => ({ battle: structuredClone(state), label, effects: effects.filter(Boolean), area, duration });
     function* hit(actorId, targetId, result, label) {
         const actor = unit(actorId), target = unit(targetId);
@@ -18,16 +41,23 @@ export function* actionFrames(before, after, events) {
         yield frame(label, [lunge(actor, target), effect(target, 'm-impact')]);
         const from = target.hp;
         target.hp = result.hpAfter;
-        yield frame(label, [effect(target, result.reaction === 'defend' ? 'm-guard' : 'm-impact', result.hit === false || result.missed ? 'MISS' : `${result.hpAfter > result.hpBefore ? '+' : '−'}${Math.abs(result.hpAfter - result.hpBefore)}`, hpFx(target, from))]);
+        setTemp(target, result.tempAfter);
+        yield frame(label, [effect(target, result.reaction === 'defend' ? 'm-guard' : 'm-impact', result.hit === false || result.missed ? 'MISS' : hpText(result) || '−0', hpFx(target, from))]);
     }
     // 战争迷雾：攻击暴露双方位置（与引擎一致），我方看不到的行动只更新状态、不播放
     const reveal = (...us) => { if (state.fog?.enabled) us.forEach(u => { if (u) u.revealed = true; }); };
     for (const e of events.filter(Boolean)) {
         const actor = unit(e.actor?.uid);
+        if (e.type === 'statusEnd' && e.tempLost) setTemp(actor, 0);
         if (e.fog) {
-            if (e.type === 'move' && actor) { actor.x = e.to.x; actor.y = e.to.y; actor.moved = true; if (e.terrainDamage) actor.hp = e.terrainDamage.hpAfter; }
-            if (['terrainDamage', 'terrainHeal', 'dot'].includes(e.type) && actor) actor.hp = e.hpAfter;
-            if (e.type === 'skill') for (const r of e.results) { const t = unit(r.target.uid); if (t) t.hp = r.hpAfter; }
+            if (e.type === 'move' && actor) { actor.x = e.to.x; actor.y = e.to.y; actor.moved = true; if (e.terrainDamage) { actor.hp = e.terrainDamage.hpAfter; setTemp(actor, e.terrainDamage.tempAfter); } landFx(actor, e.terrainEffect); }
+            if (['terrainDamage', 'terrainHeal', 'dot'].includes(e.type) && actor) { actor.hp = e.hpAfter; setTemp(actor, e.tempAfter); }
+            if (e.type === 'skill') for (const r of e.results) {
+                const t = unit(r.target.uid);
+                if (!t) continue;
+                t.hp = r.hpAfter; setTemp(t, r.tempAfter);
+                for (const ef of r.effects || []) if (ef.type === 'temp_hp' && ef.temp) setTemp(t, ef.temp);
+            }
             if (['skill', 'wait', 'stunned'].includes(e.type) && actor && !e.skill?.quick) { actor.acted = true; actor.moved = true; }
             continue;
         }
@@ -42,6 +72,11 @@ export function* actionFrames(before, after, events) {
                 }
                 actor.moved = true;
                 if (e.terrainDamage) yield* hit(null, actor.uid, e.terrainDamage, `${actor.name} 受到${e.terrain}伤害`);
+                if (e.terrainEffect) {
+                    landFx(actor, e.terrainEffect);
+                    const labels = e.terrainEffect.effects.filter(ef => !ef.failed).map(ef => ef.heal ? `+${ef.heal}` : ef.type === 'temp_hp' ? `+${ef.temp} 临时` : ef.label);
+                    yield frame(`${actor.name} 踏入${e.terrain}：${labels.join('、')}`, [effect(actor, 'm-acting', labels[0] || '效果')]);
+                }
                 break;
             }
             case 'attack':
@@ -68,8 +103,11 @@ export function* actionFrames(before, after, events) {
                     }
                     const from = target.hp;
                     target.hp = r.hpAfter;
-                    const delta = r.hpAfter - r.hpBefore;
-                    effects.push(effect(target, r.reaction === 'defend' ? 'm-guard' : 'm-impact', r.missed ? 'MISS' : delta ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : '效果', hpFx(target, from)));
+                    setTemp(target, r.tempAfter);
+                    const gained = (r.effects || []).find(ef => ef.type === 'temp_hp' && ef.temp);
+                    if (gained) setTemp(target, gained.temp);
+                    const text = r.missed ? 'MISS' : hpText(r) || (gained ? `+${gained.temp} 临时` : r.damage != null ? '−0' : '效果');
+                    effects.push(effect(target, r.reaction === 'defend' ? 'm-guard' : 'm-impact', text, hpFx(target, from)));
                 }
                 if (actor && !e.skill.quick) { actor.moved = true; actor.acted = true; }
                 yield frame(`${e.skill.name} 命中${e.results.length}个目标`, effects, e.area || []);

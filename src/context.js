@@ -1,6 +1,6 @@
 // 给 LLM 读取的战场信息：地图网格、单位详情、地形图例、任务、最近战况
 import {
-    SIDE_NAMES, EFFECTS, traitSummary, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist, toughLeft, toughMax, toughApplies, extraActions,
+    SIDE_NAMES, EFFECTS, tempHp, terrainEffectSummary, traitSummary, alive, terrainAt, stat, effectLabel, attackTargets, skillUsable, readyTurn, dist, toughLeft, toughMax, toughApplies, extraActions,
     fogOn, visibleTo, knownFoes, lastSeen, blocksSight, visionRange, unitTypeName, matchupLabel, isNeutralMatchup, matchup,
 } from './engine.js';
 import { missionText, upcomingWaves, skillSummary } from './narrator.js';
@@ -77,7 +77,9 @@ function terrainTraits(t, fog = false) {
     if (Number(t.healPct)) bits.push(`每回合回复${t.healPct}%`);
     if (Number(t.enterDamage) || Number(t.enterDamagePct)) bits.push(`落脚伤害${Number(t.enterDamage) || 0} + 最大HP的${Number(t.enterDamagePct) || 0}%`);
     if (Number(t.turnDamage) || Number(t.turnDamagePct)) bits.push(`阵营回合开始伤害${Number(t.turnDamage) || 0} + 最大HP的${Number(t.turnDamagePct) || 0}%`);
-    if (Number(t.enterDamage) || Number(t.enterDamagePct) || Number(t.turnDamage) || Number(t.turnDamagePct)) bits.push(t.damageFlying ? '飞行也受伤' : '飞行免疫地形伤害');
+    const fx = terrainEffectSummary(t);
+    if (fx) bits.push(`落脚时获得：${fx}`);
+    if (Number(t.enterDamage) || Number(t.enterDamagePct) || Number(t.turnDamage) || Number(t.turnDamagePct) || fx) bits.push(t.damageFlying ? '飞行也受影响' : '飞行免疫地形伤害和效果');
     if (fog && Number(t.visionBonus)) bits.push(`站在此处视野${t.visionBonus > 0 ? '+' : ''}${t.visionBonus}`);
     if (fog && Number(t.conceal) > 0) bits.push(`隐蔽：站在这里的单位只能被${t.conceal}格内的敌人发现`);
     if (fog && blocksSight(t)) bits.push('遮挡视线');
@@ -122,7 +124,7 @@ function unitBlock(b, u, labels, opts) {
     if (b.airRule && u.antiAir && !u.flying) tags.push('普通攻击可对空');
     if (u.attackOrder === 'last') tags.push(`${u.weaponName || '重武器'}：普通攻击后手`);
     const tough = !toughApplies(u, opts.rules) ? '' : `｜韧性 ${toughLeft(u)}/${toughMax(u)}${toughLeft(u) ? '' : '（耗尽，无法防御或反击）'}`;
-    const lines = [`[${labels[u.uid]}] ${u.name}${aliases.length ? `（又名：${aliases.join('、')}）` : ''}｜${tags.join('｜')}｜位于 ${pos(u)} ${t.name}｜HP ${u.hp}/${u.maxHp}${tough}`];
+    const lines = [`[${labels[u.uid]}] ${u.name}${aliases.length ? `（又名：${aliases.join('、')}）` : ''}｜${tags.join('｜')}｜位于 ${pos(u)} ${t.name}｜HP ${u.hp}/${u.maxHp}${tempHp(u) && u.hp > 0 ? `＋临时HP ${tempHp(u)}（先于HP承受伤害，到期消失）` : ''}${tough}`];
 
     if (opts.stats) {
         const keys = u.object ? ['def', 'mdef'] : ['atk', 'matk', 'def', 'mdef', 'agi', 'mov'];

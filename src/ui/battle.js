@@ -1,5 +1,5 @@
 // 战场页：开始战斗、棋盘操作、整理并发送给 LLM
-import { h, add, clear, toast, button, select, renderBoard, renderToken, setTokenPreview, textArea, textDialog, field, numInput, checkbox } from './dom.js';
+import { h, add, clear, toast, button, select, renderBoard, renderToken, setTokenPreview, tempSegments, textArea, textDialog, field, numInput, checkbox } from './dom.js';
 import * as E from '../engine.js';
 import { composeMessage, formatEvent, shouldNarrate, missionText, upcomingWaves, skillSummary } from '../narrator.js';
 import * as ST from '../st.js';
@@ -386,7 +386,7 @@ function onHover(app, b, x, y, refs) {
             }
             const aff = shownTargets(b, ui, E.skillAffected(b, u, sk, x, y));
             const rules = app.data.rules;
-            const fx = sk.effects.filter(e => !['heal', 'heal_pct'].includes(e.type)).map(e => E.effectLabel(e));
+            const fx = sk.effects.filter(e => !['heal', 'heal_pct', 'temp_hp'].includes(e.type)).map(e => E.effectLabel(e));
             preview = aff.map(t => {
                 const bits = [];
                 const hit = E.skillHitChance(b, u, sk, t, rules);
@@ -399,6 +399,7 @@ function onHover(app, b, x, y, refs) {
                 for (const e of sk.effects) {
                     if (e.type === 'heal') bits.push(`+${E.calcHeal(u, t, Number(e.value) || 0, rules, Math.random, true)}`);
                     if (e.type === 'heal_pct') bits.push(`+${Math.min(t.maxHp - t.hp, Math.round(t.maxHp * (Number(e.value) || 0) / 100))}`);
+                    if (e.type === 'temp_hp' && !t.object) bits.push(`临时HP ${Math.max(E.tempHp(t), Math.max(1, Math.round(t.maxHp * (Number(e.value) || 0) / 100)))}`);
                 }
                 return `${t.name} ${bits.join(' ')}`.trim();
             }).join('，');
@@ -409,8 +410,8 @@ function onHover(app, b, x, y, refs) {
     const at = seenAt(b, ui, x, y);
     if (u && at && E.isFoe(at, u) && (ui.mode === 'action' || ui.mode === 'attack') && E.attackTargets(b, u).includes(at)) {
         const p = exchangePreview(b, u, at, app.data.rules);
-        const killed = p.damage >= at.hp;
-        preview = `${p.firstStrike ? `${at.name}先攻：命中 ${p.counterHit}%，伤害 ${p.counter}${p.counter >= u.hp ? '（可能先被击败，无法出手）' : ''}；存活后` : ''}攻击 ${at.name}：命中 ${p.hit}%，伤害 ${p.damage}${killed ? '（可击败）' : ''}`
+        const killed = p.damage >= E.effectiveHp(at);
+        preview = `${p.firstStrike ? `${at.name}先攻：命中 ${p.counterHit}%，伤害 ${p.counter}${p.counter >= E.effectiveHp(u) ? '（可能先被击败，无法出手）' : ''}；存活后` : ''}攻击 ${at.name}：命中 ${p.hit}%，伤害 ${p.damage}${killed ? '（可击败）' : E.tempHp(at) ? `（临时HP先抵消 ${Math.min(p.damage, E.tempHp(at))}）` : ''}`
             + (!p.firstStrike && p.counter ? `；反击${killed ? '（若未击败）' : ''}：命中 ${p.counterHit}%，伤害 ${p.counter}` : '');
     }
     refs.preview.textContent = ui.engagement ? '' : preview || '';
@@ -434,7 +435,8 @@ function onHover(app, b, x, y, refs) {
         const t = E.terrainAt(b, x, y);
         const fog = fogView(b, ui);
         const sight = b.fog?.enabled ? `${Number(t.visionBonus) ? ` 视野${t.visionBonus > 0 ? '+' : ''}${t.visionBonus}` : ''}${Number(t.conceal) > 0 ? ` 隐蔽(${t.conceal}格内才能发现)` : ''}${E.blocksSight(t) ? ' 遮挡视线' : ''}` : '';
-        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''}${sight} ${t.desc || ''}`));
+        const landFx = E.terrainEffectSummary(t);
+        refs.hoverInfo.append(h('div.tsrpg-muted', `(${x + 1},${y + 1}) ${t.name}${t.defBonus ? ` 减伤${t.defBonus}%` : ''}${Number(t.avoid) ? ` 闪避${t.avoid > 0 ? '+' : ''}${t.avoid}%` : ''}${t.healPct ? ` 回复${t.healPct}%` : ''}${t.passable === false ? ' 不可步行' : ''}${landFx ? ` 落脚获得：${landFx}` : ''}${sight} ${t.desc || ''}`));
         if (fog && !E.visibleTiles(b, 'P').has(`${x},${y}`)) refs.hoverInfo.append(h('div.tsrpg-muted', h('i.fa-solid.fa-smog'), ' 迷雾中：看不到这里有没有敌人'));
         const ghost = fog && E.lastSeen(b, 'P').find(g => g.x === x && g.y === y);
         if (ghost) refs.hoverInfo.append(h('div.tsrpg-warn', `最后发现：${ghost.unit.name}（第 ${ghost.turn} 回合），现在可能已经离开`));
@@ -461,7 +463,8 @@ function unitCard(b, u, compact = false, rules = null) {
             b.airRule && u.antiAir && !u.flying ? h('span.tsrpg-tag', { title: '普通攻击可以打到飞行单位' }, '对空') : null,
             E.taunters(b, u).length ? h('span.tsrpg-tag.dead', `被嘲讽：只能攻击${E.taunters(b, u).map(t => t.name).join('、')}`) : null,
             u.hp <= 0 ? h('span.tsrpg-tag.dead', u.object ? '已摧毁' : '已击败') : null),
-        h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), h('span', `HP ${u.hp}/${u.maxHp}`)),
+        h('div.tsrpg-hp', h('div', { style: { width: `${pct}%` } }), ...tempSegments(u),
+            h('span', `HP ${u.hp}/${u.maxHp}${E.tempHp(u) && u.hp > 0 ? ` + 临时 ${E.tempHp(u)}` : ''}`)),
         statGrid(u, rules, b),
         (u.traits || []).length ? h('div.tsrpg-statuses', u.traits.map(t =>
             h('span.tsrpg-chip', { title: `${t.desc || ''}\n${E.traitSummary(t)}` }, `特质：${t.name}`))) : null,
@@ -693,16 +696,18 @@ function hpForecast(u, after) {
     const chunk = hi > lo ? h(`div.tsrpg-fbar-${next < u.hp ? 'loss' : 'gain'}`, { style: { left: pct(lo), width: pct(hi - lo) } },
         h('span', ko ? '击败' : `${next < u.hp ? '−' : '+'}${hi - lo}`)) : null;
     return h(`div.tsrpg-fbar.side-${u.side}${ko ? '.ko' : ''}`, { title: `HP ${u.hp}/${u.maxHp}${next !== u.hp ? ` → ${next}` : ''}` },
-        h('div.tsrpg-fbar-keep', { style: { width: pct(lo) } }), chunk,
+        h('div.tsrpg-fbar-keep', { style: { width: pct(lo) } }), ...tempSegments(u, 'tsrpg-fbar-temp'), chunk,
         chunk ? null : h('span.tsrpg-fbar-text', `${u.hp}/${u.maxHp}`));
 }
 
 /** 交战预测的一侧：头像、名字、HP 变化，下面是大血条和一个小标签 */
-function forecastSide(u, after, tag, rules, cls = '') {
+function forecastSide(u, after, tag, rules, cls = '', tempAfter = 0) {
     const next = Math.max(0, after);
+    const temp = u.hp > 0 ? E.tempHp(u) : 0;
     return h(`div.tsrpg-fc-side${cls}`,
         h('div.tsrpg-fc-name', renderToken(u), h('b', u.name),
             h('small.tsrpg-fc-hp', next === u.hp ? `${u.hp}/${u.maxHp}` : `${u.hp} → ${next}`),
+            temp ? h('small.tsrpg-fc-temp', { title: '临时HP：先于HP承受伤害，到期消失' }, `临时 ${tempAfter === temp ? temp : `${temp}→${tempAfter}`}`) : null,
             E.toughApplies(u, rules) ? h('small.tsrpg-fc-tough', { title: '韧性：防御或反击各消耗1点' }, `🛡${E.toughLeft(u)}`) : null),
         hpForecast(u, after),
         tag ? h('div.tsrpg-fc-tag', tag) : null);
@@ -710,17 +715,20 @@ function forecastSide(u, after, tag, rules, cls = '') {
 
 /** 一次交战的预计 HP（按命中计算；被援护时由援护者承受；反击 / 先攻计入攻击者） */
 function forecastHp(b, actor, skill, targets, rules) {
-    const map = new Map();
-    let actorHp = actor.hp;
+    const map = new Map(), life0 = new Map();
+    let actorLife = E.effectiveHp(actor);
     for (const t of targets) {
         const c = E.coverFor(b, actor, t, skill || null);
         const v = c ? c.unit : t;
         const p = exchangePreview(b, actor, v, rules, skill || null, E.defaultReaction(b, actor, v, rules, skill || null, !!c));
-        const after = Math.max(0, (map.get(v.uid) ?? v.hp) - (p.hit > 0 ? p.damage : 0));
-        map.set(v.uid, after);
-        if (p.responds && (p.firstStrike || after > 0)) actorHp -= p.counter;
+        // 先扣临时HP：记录有效生命，再换算成结算后的 HP
+        const life = Math.max(0, (life0.get(v.uid) ?? E.effectiveHp(v)) - (p.hit > 0 ? p.damage : 0));
+        life0.set(v.uid, life);
+        map.set(v.uid, Math.min(v.hp, life));
+        if (p.responds && (p.firstStrike || life > 0)) actorLife -= p.counter;
     }
-    if (actorHp !== actor.hp) map.set(actor.uid, Math.max(0, actorHp));
+    const actorHp = Math.max(0, Math.min(actor.hp, actorLife));
+    if (actorHp !== actor.hp) map.set(actor.uid, actorHp);
     return map;
 }
 
@@ -741,14 +749,15 @@ function engagementForecast(app, b) {
 
 function previewCard(b, actor, target, rules, skill, reaction, defendingView = false) {
     const p = exchangePreview(b, actor, target, rules, skill, reaction);
-    const targetAfter = Math.max(0, target.hp - (p.hit > 0 ? p.damage : 0));
+    const targetAfter = E.hpAfterDamage(target, p.hit > 0 ? p.damage : 0);
+    const tempLeft = (u, dmg) => Math.max(0, E.tempHp(u) - dmg);
     const countered = p.responds && (p.firstStrike || targetAfter > 0);
-    const actorAfter = countered ? Math.max(0, actor.hp - p.counter) : actor.hp;
+    const actorAfter = countered ? E.hpAfterDamage(actor, p.counter) : actor.hp;
     // 目标一侧的标签：命中率，以及防御 / 韧性耗尽等状态
     const state = reaction === 'defend' && !target.object ? ' · 防御' : !target.object && E.isFoe(actor, target) && !E.canBrace(target, rules) ? ' · 韧性耗尽' : '';
-    const hit = forecastSide(target, targetAfter, `命中 ${p.hit}%${state}`, rules, defendingView ? '' : '.right');
+    const hit = forecastSide(target, targetAfter, `命中 ${p.hit}%${state}`, rules, defendingView ? '' : '.right', tempLeft(target, p.hit > 0 ? p.damage : 0));
     const strikeTag = countered ? `${p.firstStrike ? '先攻' : '反击'} 命中 ${p.counterHit}%` : p.responds ? `击败则无反击（否则反击 ${p.counter}）` : '无反击';
-    const strike = forecastSide(actor, actorAfter, strikeTag, rules, defendingView ? '.right' : '');
+    const strike = forecastSide(actor, actorAfter, strikeTag, rules, defendingView ? '.right' : '', tempLeft(actor, countered ? p.counter : 0));
     // 兵种克制：进攻方向，以及对方反击时的方向
     const edges = [[actor, target], ...(p.responds ? [[target, actor]] : [])].map(([a, d]) => {
         const label = E.matchupLabel(E.matchup(b, a, d));
@@ -757,7 +766,7 @@ function previewCard(b, actor, target, rules, skill, reaction, defendingView = f
     return h('div.tsrpg-exchange-card', { title: `命中伤害 ${p.damage}，命中率 ${p.hit}%，期望伤害 ≈${approx(p.expectedDamage)}${p.responds ? `；${p.firstStrike ? '先攻' : '存活后反击'} ${p.counter}，命中率 ${p.counterHit}%` : ''}` },
         h('div.tsrpg-forecast', defendingView ? [hit, h('div.tsrpg-fc-vs', '⚔'), strike] : [strike, h('div.tsrpg-fc-vs', '⚔'), hit]),
         edges.length ? h('div.tsrpg-edge', h('i.fa-solid.fa-chess'), ` 兵种克制　${edges.join('；')}`) : null,
-        p.firstStrike && p.counter >= actor.hp ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
+        p.firstStrike && p.counter >= E.effectiveHp(actor) ? h('div.tsrpg-warn', defendingView ? '我方先攻可能击败对手，使其无法出手。' : '我方存在先被击败、无法出手的风险。') : null);
 }
 
 /** 多目标技能：每个目标一行血条预览，攻击者合计反击 */
@@ -866,16 +875,17 @@ function askReaction(app, b, request) {
         };
         // 有韧性时可以防御 / 反击，也可以主动承受以保留韧性；韧性耗尽时只能承受。都可以选择生成描写
         const braced = E.canBrace(target, app.data.rules);
+        const guard = braced && E.canDefend(target); // 封印防御时不能防御
         const tough = E.toughApplies(target, app.data.rules);
         const responds = E.canRespond(b, attacker, target, app.data.rules, skill, !!cover);
         const generate = reaction => {
             if (ST.isGenerating()) return toast('warning', 'LLM正在生成，请稍后再选择生成描写。');
             settle({ reaction, narrate: true });
         };
-        const defend = braced ? button('防御', () => settle('defend'), { icon: 'fa-shield', cls: 'primary' }) : null;
+        const defend = guard ? button('防御', () => settle('defend'), { icon: 'fa-shield', cls: 'primary' }) : null;
         const counter = responds ? button('反击', () => settle('counter'), { icon: 'fa-khanda' }) : null;
         const endure = button('承受', () => settle('none'), { icon: 'fa-heart-crack', cls: braced ? '' : 'primary', title: braced && tough ? '不防御也不反击，承受全额伤害，保留韧性' : '' });
-        const defendNarrate = braced ? button('防御并生成描写', () => generate('defend'), { icon: 'fa-comment' }) : null;
+        const defendNarrate = guard ? button('防御并生成描写', () => generate('defend'), { icon: 'fa-comment' }) : null;
         const counterNarrate = responds ? button('反击并生成描写', () => generate('counter'), { icon: 'fa-comment' }) : null;
         const endureNarrate = button('承受并生成描写', () => generate('none'), { icon: 'fa-comment' });
         const cancel = button('取消本次回合', () => settle(null));
@@ -883,7 +893,7 @@ function askReaction(app, b, request) {
         const option = (title, reaction, buttons) => h('div.tsrpg-option',
             h('div.tsrpg-option-head', h('b', title), h('div.tsrpg-option-buttons', buttons)),
             previewCard(b, attacker, target, app.data.rules, skill, reaction, true));
-        ui.busy = `等待${target.name}选择${!braced ? '承受' : responds ? '反击、防御或承受' : '防御或承受'}`;
+        ui.busy = `等待${target.name}选择${!braced ? '承受' : [responds && '反击', guard && '防御', '承受'].filter(Boolean).join('、')}`;
         const overlay = h('div.tsrpg-overlay', { onkeydown: e => {
             if (e.key === 'Escape') { e.preventDefault(); settle(null); }
             if (e.key === 'Tab') {
@@ -895,12 +905,13 @@ function askReaction(app, b, request) {
             h('div.tsrpg-section-title', `${attacker.name}即将${skill ? `使用【${skill.name}】攻击` : '攻击'}${cover ? `${cover.name}，由${target.name}援护承受` : target.name}`),
             cover ? h('div.tsrpg-muted', `援护：${target.name}替${cover.name}挡下这次攻击，可以防御或承受，不能反击。`) : null,
             !braced ? h('div.tsrpg-warn', `${target.name}韧性耗尽，无法防御或反击，只能承受全额伤害（己方阶段开始时回满）。`)
-                : !responds && !cover ? h('small.tsrpg-muted', '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。') : null,
+                : !responds && !cover ? h('small.tsrpg-muted', E.hasStatus(target, 'seal_counter') ? `${target.name}的反击被封印，本次无法反击。` : '本次无法反击（射程、眩晕、反击设置或MAP攻击限制）。') : null,
+            braced && !guard ? h('div.tsrpg-warn', `${target.name}的防御被封印，不能防御${responds ? '，可以反击或承受' : '，只能承受'}。`) : null,
             // 每个选项一张卡片：标题旁就是按钮，下面是双方血条预览
             responds ? option('选择反击时', 'counter', [counter, counterNarrate]) : null,
-            braced ? option('选择防御时', 'defend', [defend, defendNarrate]) : null,
+            guard ? option('选择防御时', 'defend', [defend, defendNarrate]) : null,
             option('选择承受时', 'none', [endure, endureNarrate]),
-            h('small.tsrpg-muted', `${braced ? '防御减伤并放弃反击；反击需要受击后存活。' : ''}${braced && tough ? `防御或反击消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}），承受不消耗。` : ''}「…并生成描写」：回合结算后详细描写这次交战。`),
+            h('small.tsrpg-muted', `${guard ? '防御减伤并放弃反击；' : ''}${braced ? '反击需要受击后存活。' : ''}${braced && tough ? `${guard ? '防御或反击' : '反击'}消耗1点韧性（剩余 ${E.toughLeft(target)}/${E.toughMax(target)}），承受不消耗。` : ''}「…并生成描写」：回合结算后详细描写这次交战。`),
             h('div.tsrpg-row.tsrpg-option-foot', cancel),
         ));
         ui.cancelReaction = () => settle(null);

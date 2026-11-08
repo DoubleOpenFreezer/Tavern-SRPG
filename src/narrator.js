@@ -11,7 +11,24 @@ function who(r) {
 }
 
 function hpChange(r) {
-    return `HP ${r.hpBefore}→${r.hpAfter}`;
+    // 临时HP先承受伤害：写明抵消了多少、还剩多少
+    const temp = r.absorbed > 0 ? `，临时HP抵消 ${r.absorbed}${r.tempAfter ? `、剩 ${r.tempAfter}` : '、已耗尽'}` : '';
+    return `HP ${r.hpBefore}→${r.hpAfter}${temp}`;
+}
+
+/** 技能或地形施加的效果，逐条写成短句 */
+function effectBits(effects) {
+    const bits = [];
+    for (const ef of effects || []) {
+        if (ef.heal != null) continue;
+        if (ef.type === 'cleanse') bits.push(ef.removed?.length ? `被驱散了${ef.removed.map(x => `【${x}】`).join('')}` : '被净化（没有减益）');
+        else if (ef.type === 'cover_area') bits.push(`由${ef.holder}以自身为中心展开【${ef.label}】，${ef.holder}周围${ef.value}格内的友军受到的单体攻击都由${ef.holder}承受（${ef.turns} 回合）`);
+        else if (ef.type === 'refresh') bits.push(ef.failed ? `额外行动无效（${ef.failed}）` : ef.now ? '立即获得再次行动的机会' : '获得额外行动，本回合可以行动两次');
+        else if (ef.type === 'recall') bits.push(ef.failed ? `召回无效（${ef.failed}）` : `被召回到 ${pos(ef.to)}${ef.terrain}${ef.terrainDamage ? `，${formatEvent(ef.terrainDamage).replace(/。$/, '')}` : ''}${ef.terrainEffect ? `，${formatEvent(ef.terrainEffect).replace(/。$/, '')}` : ''}`);
+        else if (ef.type === 'temp_hp') bits.push(ef.failed ? `临时HP无效（${ef.failed}）` : `获得 ${ef.temp} 点临时HP（${ef.turns} 回合后消失${ef.tempBefore >= ef.temp && ef.tempBefore ? '，原有的临时HP更多，只刷新时间' : ''}）`);
+        else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
+    }
+    return bits;
 }
 
 /** 事件属于哪个描写类别 */
@@ -22,7 +39,7 @@ export function eventCategory(e) {
         case 'skill': return 'skill';
         case 'phase': case 'terrainHeal': case 'terrainDamage': case 'mission': return 'turn';
         case 'reinforce': return 'reinforce';
-        case 'dot': case 'statusEnd': case 'stunned': return 'status';
+        case 'dot': case 'statusEnd': case 'stunned': case 'terrainEffect': return 'status';
         case 'llm': return 'llm';
         case 'result': return 'result';
         default: return 'other';
@@ -73,9 +90,10 @@ function formatEventBody(e) {
         case 'move': {
             const ambush = e.ambush ? `途中在迷雾里撞上埋伏的 ${who(e.ambush)}，被迫停下。` : '';
             if (e.ambush && e.from.x === e.to.x && e.from.y === e.to.y) return `${who(e.actor)} 刚要从 ${pos(e.from)}${e.fromTerrain} 出发，就在迷雾里撞上埋伏的 ${who(e.ambush)}，被迫停下。`;
-            if (e.fogIn) return `${who(e.actor)} 从迷雾中现身，出现在 ${pos(e.to)}${e.terrain}。${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+            const land = `${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}${e.terrainEffect ? formatEvent(e.terrainEffect) : ''}`;
+            if (e.fogIn) return `${who(e.actor)} 从迷雾中现身，出现在 ${pos(e.to)}${e.terrain}。${land}`;
             if (e.fogOut) return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 离开，消失在迷雾中。`;
-            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${ambush}${e.terrainDamage ? formatEvent(e.terrainDamage) : ''}`;
+            return `${who(e.actor)} 从 ${pos(e.from)}${e.fromTerrain} 移动到 ${pos(e.to)}${e.terrain}。${ambush}${land}`;
         }
         case 'fogActivity':
             return '迷雾中传来敌军活动的动静，但看不清具体动向。';
@@ -87,6 +105,11 @@ function formatEventBody(e) {
             return e.restore
                 ? `【战斗回溯】战场恢复到回溯前的进度（第 ${e.toTurn} 回合），之后的战况以当前战场为准。`
                 : `【战斗回溯】战场回到第 ${e.toTurn} 回合我方阶段开始时的状态（原进度为第 ${e.fromTurn} 回合），之后的战况以当前战场为准。`;
+        case 'terrainEffect': {
+            const heal = e.effects.reduce((n, ef) => n + (ef.heal || 0), 0);
+            const bits = [...(heal ? [`恢复 ${heal} 点生命（${hpChange(e)}）`] : []), ...effectBits(e.effects)];
+            return bits.length ? `${who(e.actor)} 踏入${e.terrain}，${bits.join('，')}。` : '';
+        }
         case 'terrainDamage':
             return `${who(e.actor)} ${e.timing === 'turn' ? '回合开始时' : '落脚时'}受到${e.terrain}伤害，损失 ${e.damage} 点生命（${hpChange(e)}）${e.killed ? '，被击败' : ''}。`;
         case 'wait':
@@ -96,6 +119,7 @@ function formatEventBody(e) {
             if (e.reaction === 'defend') lead = `${who(e.target)}选择防御，放弃反击并减轻伤害。`;
             if (e.exhausted) lead = `${who(e.target)}韧性耗尽，无法防御或反击，只能硬接这一击。`;
             if (e.endured) lead = `${who(e.target)}没有防御或反击，选择硬接这一击（保留韧性）。`;
+            if (e.sealed) lead = `${who(e.target)}的防御被封印，只能硬接这一击。`;
             if (e.firstStrike) {
                 const f = e.firstStrike;
                 lead = `${who(e.actor)} 使用后手武器，${who(e.target)}先攻${f.hit === false ? '但未命中' : `造成 ${f.damage} 点伤害（${e.actor.name} ${hpChange(f)}）`}。`;
@@ -127,24 +151,18 @@ function formatEventBody(e) {
                 if (r.coveredFor) bits.push(`挺身援护${r.coveredFor.name}`);
                 if (r.exhausted) bits.push('韧性耗尽，无法防御');
                 if (r.endured) bits.push('选择硬接（保留韧性）');
+                if (r.sealed) bits.push('防御被封印，只能硬接');
                 if (r.reaction === 'defend') bits.push('选择防御');
                 if (r.damage != null) bits.push(`受到 ${r.damage} 点伤害${r.matchup ? `（兵种${r.matchup.dmg >= 100 ? '克制' : '劣势'}：${matchupLabel(r.matchup)}）` : ''}`);
                 if (r.heal != null) bits.push(`恢复 ${r.heal} 点生命`);
-                for (const ef of r.effects || []) {
-                    if (ef.heal != null) continue;
-                    if (ef.type === 'cleanse') bits.push(ef.removed?.length ? `被驱散了${ef.removed.map(x => `【${x}】`).join('')}` : '被净化（没有减益）');
-                    else if (ef.type === 'cover_area') bits.push(`由${ef.holder}以自身为中心展开【${ef.label}】，${ef.holder}周围${ef.value}格内的友军受到的单体攻击都由${ef.holder}承受（${ef.turns} 回合）`);
-                    else if (ef.type === 'refresh') bits.push(ef.failed ? `额外行动无效（${ef.failed}）` : ef.now ? '立即获得再次行动的机会' : '获得额外行动，本回合可以行动两次');
-                    else if (ef.type === 'recall') bits.push(ef.failed ? `召回无效（${ef.failed}）` : `被召回到 ${pos(ef.to)}${ef.terrain}${ef.terrainDamage ? `，${formatEvent(ef.terrainDamage).replace(/。$/, '')}` : ''}`);
-                    else bits.push(`${ef.debuff ? '陷入' : '获得'}【${ef.label}】（${ef.turns} 回合）`);
-                }
-                const hp = r.hpBefore !== r.hpAfter ? `（${hpChange(r)}）` : '';
+                bits.push(...effectBits(r.effects));
+                const hp = r.hpBefore !== r.hpAfter || r.absorbed > 0 ? `（${hpChange(r)}）` : '';
                 if (e.teleport && !bits.length && !hp) return ''; // 纯传送：只描述位移
                 return `${who(r.target)} ${bits.join('，') || '不受影响'}${hp}${r.killed ? '，被击败' : ''}${counter}`;
             }).filter(Boolean);
             if (e.teleport) {
                 const t = e.teleport;
-                parts.unshift(`从 ${pos(t.from)} 瞬间传送到 ${pos(t.to)}${t.terrain}${t.terrainDamage ? `，${formatEvent(t.terrainDamage).replace(/。$/, '')}` : ''}`);
+                parts.unshift(`从 ${pos(t.from)} 瞬间传送到 ${pos(t.to)}${t.terrain}${t.terrainDamage ? `，${formatEvent(t.terrainDamage).replace(/。$/, '')}` : ''}${t.terrainEffect ? `，${formatEvent(t.terrainEffect).replace(/。$/, '')}` : ''}`);
             }
             const desc = e.skill.desc ? `（${e.skill.desc}）` : '';
             const mode = e.skill.attackMode === 'mapLine' ? 'MAP直线' : e.skill.attackMode === 'mapArea' ? 'MAP范围' : '';
@@ -153,12 +171,12 @@ function formatEventBody(e) {
         }
         case 'dot':
             return e.effect === 'poison'
-                ? `${who(e.actor)} 受到毒素侵蚀，损失 ${e.hpBefore - e.hpAfter} 点生命（${hpChange(e)}）。`
+                ? `${who(e.actor)} 受到毒素侵蚀，损失 ${e.hpBefore - e.hpAfter + (e.absorbed || 0)} 点生命（${hpChange(e)}）。`
                 : `${who(e.actor)} 在【${e.label}】效果下恢复了 ${e.hpAfter - e.hpBefore} 点生命（${hpChange(e)}）。`;
         case 'stunned':
             return `${who(e.actor)} 处于眩晕状态，无法行动。`;
         case 'statusEnd':
-            return `${who(e.actor)} 身上的${e.effects.map(x => `【${x}】`).join('')}效果结束了。`;
+            return `${who(e.actor)} 身上的${e.effects.map(x => `【${x}】`).join('')}效果结束了${e.tempLost ? `，剩下的 ${e.tempLost} 点临时HP随之消失` : ''}。`;
         case 'phase':
             return e.phase === 'player' ? `—— 第 ${e.turn} 回合 · 我方阶段开始 ——` : `—— 第 ${e.turn} 回合 · ${SIDE_NAMES[e.phase]}阶段 ——`;
         case 'terrainHeal':

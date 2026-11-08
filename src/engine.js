@@ -359,6 +359,7 @@ export const EFFECTS = {
     mov_up: { name: '移动力上升', group: '增益', stat: 'mov', sign: 1, value: 2, unit: '格', flat: true },
     vision_up: { name: '视野上升', group: '增益', stat: 'vision', sign: 1, value: 2, unit: '格', flat: true, help: '战争迷雾中看得更远' },
     regen: { name: '持续恢复', group: '增益', value: 10, unit: '% 最大HP / 回合', help: '每次自己阵营的阶段开始时恢复生命' },
+    temp_hp: { name: '临时HP', group: '增益', value: 30, unit: '% 最大HP', help: '获得额外的临时生命（可以超过最大HP）：受到伤害时先扣临时HP；持续回合结束时剩下的临时HP全部消失。再次获得时取较多的一份并刷新回合' },
     taunt: { name: '嘲讽', group: '增益', value: 0, unit: '格（0＝全图）', help: '范围内的敌人只能攻击带有嘲讽的单位' },
     cover: { name: '援护', group: '增益', noValue: true, help: '施法者替目标承受下一次单体攻击（普通攻击或单体伤害技能），承受一次后消失；援护者不反击，可以防御。不能援护自己' },
     cover_area: { name: '范围援护', group: '增益', value: 2, unit: '格', flat: true, help: '总是作用于施法者（无论技能选择谁）：施法者周围此范围内的友军受到单体攻击时，都由施法者承受（不限次数）；不反击，可以防御。MAP / 范围攻击不会被援护' },
@@ -372,7 +373,13 @@ export const EFFECTS = {
     reveal: { name: '暴露行踪', group: '减益', noValue: true, debuff: true, help: '战争迷雾中，所有敌人都能看到该单位' },
     poison: { name: '中毒', group: '减益', value: 10, unit: '% 最大HP / 回合', debuff: true, help: '每次自己阵营的阶段开始时损失生命，不会因此倒下' },
     stun: { name: '眩晕', group: '减益', noValue: true, debuff: true, help: '无法行动' },
+    seal_defend: { name: '封印防御', group: '减益', noValue: true, debuff: true, help: '受到攻击时不能防御（仍可反击或承受）；援护他人时也只能承受' },
+    seal_counter: { name: '封印反击', group: '减益', noValue: true, debuff: true, help: '受到攻击时不能反击，后手武器的对手也不会被它先攻（仍可防御或承受）' },
 };
+
+// 地形落脚效果：需要施法者或另一个单位的效果不能用
+const NOT_TERRAIN = new Set(['heal', 'refresh', 'recall', 'cover', 'cover_area']);
+export const TERRAIN_EFFECTS = Object.fromEntries(Object.entries(EFFECTS).filter(([id]) => !NOT_TERRAIN.has(id)));
 
 // 特质与临时状态独立：不会过期，也不能被驱散。
 export const TRAIT_EFFECTS = {
@@ -409,6 +416,7 @@ export function effectLabel(e) {
     if (e.type === 'cover' && e.byName) return `受${e.byName}援护`;
     if (def.noValue || (e.type === 'taunt' && !Number(e.value))) return def.name;
     if (e.type === 'taunt') return `${def.name}（${e.value}格）`;
+    if (e.type === 'temp_hp' && e.amount != null) return `${def.name} ${e.amount}`;
     if (def.instant) return def.name;
     return `${def.name}${e.value}${def.flat ? '格' : '%'}`;
 }
@@ -437,6 +445,11 @@ export function hasStatus(u, type) {
 
 export function isStunned(u) {
     return hasStatus(u, 'stun');
+}
+
+/** 能否选择防御（建筑不防御；「封印防御」时不能） */
+export function canDefend(u) {
+    return !u.object && !hasStatus(u, 'seal_defend');
 }
 
 /** 计入增益 / 减益后的属性 */
@@ -537,10 +550,64 @@ function rollHit(chance, rng) {
     return chance >= 100 || (chance > 0 && rng() * 100 < chance);
 }
 
+// ---------------------------------------------------------------- 临时HP
+// 临时HP记在「临时HP」状态的 amount 上：受到伤害时先扣它，状态到期（或被打光）时剩余部分消失。
+
+/** 单位当前的临时HP */
+export function tempHp(u) {
+    return (u?.statuses || []).reduce((n, s) => n + (s.type === 'temp_hp' ? Math.max(0, Number(s.amount) || 0) : 0), 0);
+}
+
+/** 计入临时HP的有效生命（用于预测能否击败） */
+export function effectiveHp(u) {
+    return Math.max(0, Number(u.hp) || 0) + (u.hp > 0 ? tempHp(u) : 0);
+}
+
+/** 受到 dmg 点伤害后的 HP（先扣临时HP），不修改单位 */
+export function hpAfterDamage(u, dmg) {
+    return Math.max(0, Math.min(u.hp, effectiveHp(u) - Math.max(0, dmg)));
+}
+
+/** 获得临时HP：与已有的取较多的一份，并刷新持续回合 */
+export function grantTempHp(u, amount, turns, srcSide, value = 0) {
+    amount = Math.max(0, Math.round(Number(amount) || 0));
+    const before = tempHp(u);
+    u.statuses = (u.statuses || []).filter(s => s.type !== 'temp_hp');
+    const now = Math.max(before, amount);
+    u.statuses.push({ type: 'temp_hp', value, turns: Math.max(1, Number(turns) || 1), srcSide, amount: now });
+    return { before, after: now };
+}
+
+/**
+ * 扣除生命：先扣临时HP，再扣 HP（不低于 floor）。被打光的临时HP状态随即消失。
+ * 返回 { absorbed, tempBefore, tempAfter }，没有临时HP时 absorbed 为 0。
+ */
+export function loseHp(u, amount, floor = 0) {
+    amount = Math.max(0, amount);
+    const tempBefore = u.hp > 0 ? tempHp(u) : 0;
+    let left = amount;
+    if (tempBefore > 0 && left > 0) {
+        for (const s of u.statuses) {
+            if (s.type !== 'temp_hp' || !left) continue;
+            const take = Math.min(left, Math.max(0, Number(s.amount) || 0));
+            s.amount -= take; left -= take;
+        }
+        u.statuses = u.statuses.filter(s => s.type !== 'temp_hp' || s.amount > 0);
+    }
+    u.hp = Math.max(Math.min(floor, u.hp), u.hp - left);
+    const tempAfter = tempHp(u);
+    return { absorbed: tempBefore - tempAfter, tempBefore, tempAfter };
+}
+
+/** 事件里记录临时HP的变化（没有临时HP时不加字段） */
+function tempFields(r) {
+    return r.absorbed > 0 || r.tempBefore > 0 ? { absorbed: r.absorbed, tempBefore: r.tempBefore, tempAfter: r.tempAfter } : {};
+}
+
 function applyDamage(u, dmg) {
     const before = u.hp;
-    u.hp = Math.max(0, u.hp - dmg);
-    return { hpBefore: before, hpAfter: u.hp, killed: before > 0 && u.hp === 0 };
+    const temp = loseHp(u, dmg);
+    return { hpBefore: before, hpAfter: u.hp, killed: before > 0 && u.hp === 0, ...tempFields(temp) };
 }
 
 function ref(u) {
@@ -565,7 +632,7 @@ export function canEverHit(b, unit, target) {
 }
 
 export function canCounter(b, defender, attacker) {
-    if (defender.hp <= 0 || defender.object || defender.noCounter || isStunned(defender)) return false;
+    if (defender.hp <= 0 || defender.object || defender.noCounter || isStunned(defender) || hasStatus(defender, 'seal_counter')) return false;
     if (!canHit(b, defender, attacker)) return false;
     const d = dist(defender.x, defender.y, attacker.x, attacker.y);
     return d >= defender.rangeMin && d <= defender.rangeMax;
@@ -613,9 +680,36 @@ export function terrainDamage(b, unit, timing = 'enter') {
     const amount = Math.floor(fixed) + (pct > 0 ? Math.max(1, Math.round(unit.maxHp * pct / 100)) : 0);
     if (!amount) return null;
     const before = unit.hp;
-    unit.hp = Math.max(0, unit.hp - amount);
+    const temp = loseHp(unit, amount);
     if (!unit.hp) unit.acted = true;
-    return fogTag(b, unit, { type: 'terrainDamage', turn: b.turn, actor: ref(unit), timing, terrain: t.name, damage: before - unit.hp, hpBefore: before, hpAfter: unit.hp, killed: !unit.hp });
+    return fogTag(b, unit, { type: 'terrainDamage', turn: b.turn, actor: ref(unit), timing, terrain: t.name, damage: before - unit.hp + temp.absorbed, hpBefore: before, hpAfter: unit.hp, killed: !unit.hp, ...tempFields(temp) });
+}
+
+/** 落脚地形的效果（地形「落脚效果」）：与地形伤害相同，飞行单位默认不受影响 */
+export function terrainEffects(b, unit) {
+    const t = terrainAt(b, unit.x, unit.y);
+    const list = (Array.isArray(t.effects) ? t.effects : []).filter(e => TERRAIN_EFFECTS[e?.type]);
+    if (!list.length || unit.hp <= 0 || unit.object || (unit.flying && !t.damageFlying)) return null;
+    const before = unit.hp;
+    // 由单位自己承受：持续回合在它自己阵营的阶段开始时减 1
+    const effects = applyEffects(b, unit, unit, list, {}, Math.random);
+    return fogTag(b, unit, { type: 'terrainEffect', turn: b.turn, actor: ref(unit), terrain: t.name, effects, hpBefore: before, hpAfter: unit.hp, tempAfter: tempHp(unit) });
+}
+
+/** 地形落脚效果的简述，例如「封印防御（2回合）、恢复HP（按比例）20%」；没有时为空串 */
+export function terrainEffectSummary(t) {
+    return (Array.isArray(t?.effects) ? t.effects : []).filter(e => TERRAIN_EFFECTS[e?.type]).map(e => {
+        const def = EFFECTS[e.type];
+        return def.instant ? `${def.name}${def.noValue ? '' : `${Number(e.value) || 0}%`}` : `${effectLabel(e)}（${Math.max(1, Number(e.turns) || 1)}回合）`;
+    }).join('、');
+}
+
+/** 落脚：先结算地形伤害，存活时再施加落脚效果 */
+function landOn(b, unit, target) {
+    target.terrainDamage = terrainDamage(b, unit);
+    const fx = unit.hp > 0 ? terrainEffects(b, unit) : null;
+    if (fx) target.terrainEffect = fx;
+    return target;
 }
 
 /**
@@ -648,15 +742,16 @@ export function doMove(b, unit, x, y, { fogView = false } = {}) {
     unit.moved = true;
     if (from.x === x && from.y === y && !ambush) return null;
     const hidAfter = hiddenFromPlayer(b, unit);
-    return {
+    const ev = {
         type: 'move', turn: b.turn, actor: ref(unit),
         from, to: { x, y }, path,
         terrain: terrainAt(b, x, y).name,
         fromTerrain: terrainAt(b, from.x, from.y).name,
         ...(ambush ? { ambush: ref(ambush) } : {}),
         ...(hidBefore && hidAfter ? { fog: true } : hidBefore ? { fogIn: true } : hidAfter ? { fogOut: true } : {}),
-        terrainDamage: from.x === x && from.y === y ? null : terrainDamage(b, unit),
+        terrainDamage: null,
     };
+    return from.x === x && from.y === y ? ev : landOn(b, unit, ev);
 }
 
 export function attackTargets(b, unit, fromX = unit.x, fromY = unit.y) {
@@ -686,6 +781,7 @@ export function defaultReaction(b, attacker, defender, rules, skill = null, cove
     if (defender.object || !isFoe(attacker, defender) || !canBrace(defender, rules)) return 'none';
     if (canRespond(b, attacker, defender, rules, skill, covering)) return 'counter';
     // 不受韧性系统约束的 AI 单位只在能反击时反击，不会防御（援护时总是防御）
+    if (!canDefend(defender)) return 'none';
     return covering || toughApplies(defender, rules) || defender.side === 'player' ? 'defend' : 'none';
 }
 
@@ -716,6 +812,7 @@ function useReaction(b, attacker, defender, rules, reaction, skill = null, cover
     if (!['counter', 'defend'].includes(reaction)) return { reaction: 'none' };
     if (reaction === 'counter' && covering) reaction = 'defend'; // 援护者不反击，按防御处理
     if (reaction === 'counter' && !canRespond(b, attacker, defender, rules, skill)) return { reaction: 'none' };
+    if (reaction === 'defend' && !canDefend(defender)) return { reaction: 'none', sealed: true }; // 封印防御：只能承受，不消耗韧性
     if (!toughApplies(defender, rules)) return { reaction };
     // 兵种克制可以让一次招架消耗多点韧性（或不消耗）
     const before = toughLeft(defender);
@@ -724,6 +821,7 @@ function useReaction(b, attacker, defender, rules, reaction, skill = null, cover
 }
 
 export function previewAttack(b, unit, target, rules, reaction = 'counter') {
+    if (reaction === 'defend' && !canDefend(target)) reaction = 'none';
     let dmg = calcDamage(b, unit, target, unit.atkType, 100, rules, Math.random, true);
     if (reaction === 'defend' && !target.object) dmg = defenseDamage(dmg, rules);
     const hit = hitChance(b, unit, target, rules);
@@ -734,8 +832,8 @@ export function previewAttack(b, unit, target, rules, reaction = 'counter') {
         counter = calcDamage(b, target, unit, target.atkType, 100, rules, Math.random, true);
         counterHit = hitChance(b, target, unit, rules);
     }
-    const canSurviveFirst = firstStrike && counter >= unit.hp ? 1 - counterHit / 100 : 1;
-    const canSurviveAttack = !firstStrike && dmg >= target.hp ? 1 - hit / 100 : 1;
+    const canSurviveFirst = firstStrike && counter >= effectiveHp(unit) ? 1 - counterHit / 100 : 1;
+    const canSurviveAttack = !firstStrike && dmg >= effectiveHp(target) ? 1 - hit / 100 : 1;
     return { damage: dmg, hit, counter, counterHit, firstStrike, responds, expectedDamage: dmg * hit / 100 * canSurviveFirst, expectedCounter: counter * counterHit / 100 * canSurviveAttack };
 }
 
@@ -779,6 +877,7 @@ export function doAttack(b, unit, target, rules, rng = Math.random, reaction = '
         reaction,
         ...(used.exhausted ? { exhausted: true } : {}),
         ...(used.endured ? { endured: true } : {}),
+        ...(used.sealed ? { sealed: true } : {}),
         ...(used.tough ? { tough: used.tough } : {}),
     };
     if (reaction === 'counter' && !first && rules.counter && canCounter(b, target, unit)) {
@@ -881,7 +980,7 @@ function applyEffects(b, caster, t, effects, rules, rng) {
             if (!to || (to[0] === t.x && to[1] === t.y)) { out.push({ type: e.type, label: def.name, failed: t.object ? '建筑无法移动' : t === caster ? '对自身无效' : to ? '已在身边' : '身边没有空位' }); continue; }
             const from = { x: t.x, y: t.y };
             t.x = to[0]; t.y = to[1];
-            out.push({ type: e.type, label: def.name, from, to: { x: t.x, y: t.y }, terrain: terrainAt(b, t.x, t.y).name, terrainDamage: terrainDamage(b, t) });
+            out.push(landOn(b, t, { type: e.type, label: def.name, from, to: { x: t.x, y: t.y }, terrain: terrainAt(b, t.x, t.y).name }));
             continue;
         }
         if (e.type === 'cover') {
@@ -899,6 +998,13 @@ function applyEffects(b, caster, t, effects, rules, rng) {
             caster.statuses = caster.statuses.filter(x => x.type !== 'cover_area');
             caster.statuses.push({ type: 'cover_area', value, turns, srcSide: caster.side });
             out.push({ type: e.type, label: effectLabel({ type: e.type, value }), turns, holder: caster.name, value });
+            continue;
+        }
+        if (e.type === 'temp_hp') {
+            if (t.object) { out.push({ type: e.type, label: def.name, failed: '建筑无法获得临时HP' }); continue; }
+            const turns = Math.max(1, Number(e.turns) || 1);
+            const g = grantTempHp(t, Math.max(1, Math.round(t.maxHp * value / 100)), turns, caster.side, value);
+            out.push({ type: e.type, label: effectLabel({ type: e.type, amount: g.after }), turns, temp: g.after, tempBefore: g.before });
             continue;
         }
         if (e.type === 'heal' || e.type === 'heal_pct') {
@@ -934,7 +1040,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         // 传送不经过路径、无视移动消耗，但会受到落脚地形伤害
         teleport = { from: { x: unit.x, y: unit.y }, to: { x: tx, y: ty }, terrain: terrainAt(b, tx, ty).name };
         unit.x = tx; unit.y = ty;
-        teleport.terrainDamage = terrainDamage(b, unit);
+        landOn(b, unit, teleport);
     }
     const targets = skillAffected(b, unit, skill, tx, ty);
     // 战争迷雾中朝看不清的区域施放范围技能时，没有目标也照常消耗（不泄露迷雾中有没有人）
@@ -962,6 +1068,7 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
         if (!isNeutralMatchup(edge)) r.matchup = edge;
         if (used[t.uid].exhausted) r.exhausted = true;
         if (used[t.uid].endured) r.endured = true;
+        if (used[t.uid].sealed) r.sealed = true;
         if (covers.has(t.uid)) r.coveredFor = ref(covers.get(t.uid));
         if (used[t.uid].tough) r.tough = used[t.uid].tough;
         const chance = skillHitChance(b, unit, skill, t, rules);
@@ -973,7 +1080,8 @@ export function doSkill(b, unit, skill, tx, ty, rules, rng = Math.random, respon
             r.damage = calcDamage(b, unit, t, skill.kind, skill.power, rules, rng);
             r.reaction = used[t.uid].reaction;
             if (r.reaction === 'defend' && !t.object) r.damage = defenseDamage(r.damage, rules);
-            r.killed = applyDamage(t, r.damage).killed;
+            const { hpBefore, hpAfter, ...dealt } = applyDamage(t, r.damage);
+            Object.assign(r, dealt);
         }
         if (t.hp > 0) {
             r.effects = applyEffects(b, unit, t, skill.effects, rules, rng);
@@ -1153,6 +1261,14 @@ function effectScore(b, caster, t, e, rules) {
             return missing / t.maxHp < 0.3 ? 0 : Math.min(missing, Math.round(t.maxHp * v / 100));
         case 'cleanse':
             return 8 * (t.statuses || []).filter(x => EFFECTS[x.type]?.debuff).length;
+        case 'temp_hp': {
+            // 只在快要挨打时有用；已有更多的临时HP时没有意义
+            if (t.object) return 0;
+            const gain = Math.max(1, Math.round(t.maxHp * v / 100)) - tempHp(t);
+            if (gain <= 0) return 0;
+            const threatened = alive(b).some(f => isFoe(f, t) && !f.object && dist(f.x, f.y, t.x, t.y) <= stat(f, 'mov') + f.rangeMax + 1);
+            return threatened ? Math.min(14, 3 + gain / t.maxHp * 20 + (t.hp / t.maxHp < 0.5 ? 4 : 0)) : 1;
+        }
     }
     if (hasStatus(t, e.type)) return 0;
     if (e.type === 'stun') return 18;
@@ -1182,11 +1298,12 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
             const dmg = preview.damage;
             const hit = preview.hit / 100;
             if (!hit) continue; // 不会去打完全打不中的目标
-            let score = 1 + (Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0)) * hit;
+            const life = effectiveHp(t);
+            let score = 1 + (Math.min(dmg, life) + (dmg >= life ? 100 : 0)) * hit;
             if (preview.counter) {
-                const survive = preview.firstStrike ? 1 : dmg >= t.hp ? 1 - hit : 1;
+                const survive = preview.firstStrike ? 1 : dmg >= life ? 1 - hit : 1;
                 score -= calcDamage(b, t, unit, t.atkType, 100, rules, Math.random, true) * (hitChance(b, t, unit, rules) / 100) * survive * 0.3;
-                if (preview.firstStrike && preview.counter >= unit.hp) score *= 1 - preview.counterHit / 100;
+                if (preview.firstStrike && preview.counter >= effectiveHp(unit)) score *= 1 - preview.counterHit / 100;
             }
             consider({ kind: 'attack', x, y, target: t, score: Math.max(0.5, score) + (preferred.includes(t) ? 10000 : 0) });
         }
@@ -1214,9 +1331,10 @@ function candidatesAt(b, unit, x, y, rules, filter, mode) {
                     let dmg = calcDamage(b, unit, t, sk.kind, sk.power, rules, Math.random, true);
                     if (defaultReaction(b, unit, t, rules, sk) === 'defend' && !t.object) dmg = defenseDamage(dmg, rules);
                     const hit = skillHitChance(b, unit, sk, t, rules) / 100;
-                    const value = 1 + (Math.min(dmg, t.hp) + (dmg >= t.hp ? 100 : 0)) * hit;
+                    const life = effectiveHp(t);
+                    const value = 1 + (Math.min(dmg, life) + (dmg >= life ? 100 : 0)) * hit;
                     score += foe ? value : -value * 2;
-                    if (foe && dmg < t.hp) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5 * hit;
+                    if (foe && dmg < life) for (const e of sk.effects) score += effectScore(b, unit, t, e, rules) * 0.5 * hit;
                 }
             }
             // 有次数限制或冷却的技能，略微倾向于保留
@@ -1325,6 +1443,10 @@ function tileHazard(b, unit, x, y) {
         const fixed = Math.max(0, Number(t[`${timing}Damage`]) || 0);
         const pct = Math.max(0, Number(t[`${timing}DamagePct`]) || 0);
         total += Math.floor(fixed) + (pct > 0 ? Math.max(1, Math.round(unit.maxHp * pct / 100)) : 0);
+    }
+    // 落脚减益也算危险（眩晕尤其）
+    for (const e of Array.isArray(t.effects) ? t.effects : []) {
+        if (EFFECTS[e?.type]?.debuff) total += Math.max(2, Math.round(unit.maxHp * (e.type === 'stun' ? 0.3 : 0.1)));
     }
     return total;
 }
@@ -1545,27 +1667,30 @@ function startTurnEffects(b, side) {
             u.hp = Math.min(u.maxHp, u.hp + amount);
             events.push(fogTag(b, u, { type: 'dot', turn: b.turn, actor: ref(u), effect: 'regen', label: `特质：${e.traitName}`, hpBefore: before, hpAfter: u.hp }));
         }
-        for (const st of u.statuses || []) {
+        for (const st of [...(u.statuses || [])]) {
             const v = Math.max(1, Math.round(u.maxHp * (Number(st.value) || 0) / 100));
             const before = u.hp;
+            let temp = null;
             if (st.type === 'regen' && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + v);
-            else if (st.type === 'poison' && u.hp > 1) u.hp = Math.max(1, u.hp - v);
+            else if (st.type === 'poison' && (u.hp > 1 || tempHp(u) > 0)) temp = loseHp(u, v, 1); // 毒先侵蚀临时HP，不会因此倒下
             else continue;
-            events.push(fogTag(b, u, { type: 'dot', turn: b.turn, actor: ref(u), effect: st.type, label: EFFECTS[st.type].name, hpBefore: before, hpAfter: u.hp }));
+            events.push(fogTag(b, u, { type: 'dot', turn: b.turn, actor: ref(u), effect: st.type, label: EFFECTS[st.type].name, hpBefore: before, hpAfter: u.hp, ...(temp ? tempFields(temp) : {}) }));
         }
         for (const sk of u.skills || []) if (sk.cdLeft > 0) sk.cdLeft -= 1;
     }
     for (const u of alive(b)) {
         if (!u.statuses?.length) continue;
         const ended = [];
+        let lostTemp = 0;
         u.statuses = u.statuses.filter(st => {
             if (st.srcSide !== side) return true;
             st.turns -= 1;
             if (st.turns > 0) return true;
             ended.push(effectLabel(st));
+            if (st.type === 'temp_hp') lostTemp += Math.max(0, Number(st.amount) || 0);
             return false;
         });
-        if (ended.length) events.push(fogTag(b, u, { type: 'statusEnd', turn: b.turn, actor: ref(u), effects: ended }));
+        if (ended.length) events.push(fogTag(b, u, { type: 'statusEnd', turn: b.turn, actor: ref(u), effects: ended, ...(lostTemp ? { tempLost: lostTemp } : {}) }));
     }
     return events;
 }

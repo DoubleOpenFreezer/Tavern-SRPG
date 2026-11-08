@@ -1,7 +1,7 @@
 // 战场指令：剧情同步时，插件 LLM 从剧情中读出的战场变化（damage E1 5 落石 …）
 // 解析 → 校验 → 应用。全部是纯逻辑，不依赖 SillyTavern。
 import {
-    EFFECTS, alive, getUnit, terrainAt, enterCost, unitAt, inBounds, effectLabel, makeBattleUnit, checkResult,
+    EFFECTS, alive, getUnit, loseHp, grantTempHp, terrainAt, enterCost, unitAt, inBounds, effectLabel, makeBattleUnit, checkResult,
 } from './engine.js';
 import { unitLabels, unitAliases } from './context.js';
 
@@ -94,8 +94,8 @@ export function applyCommand(b, c, opt) {
             const note = n > cap(u) ? `（超过上限，按 ${cap(u)} 计算）` : '';
             n = Math.min(n, cap(u));
             const before = u.hp;
-            u.hp = Math.max(opt.allowKill ? 0 : 1, u.hp - n);
-            return { ...ev, actor: ref(u), amount: before - u.hp, hpBefore: before, hpAfter: u.hp, killed: u.hp === 0, reason: reasonFrom(2), note };
+            const temp = loseHp(u, n, opt.allowKill ? 0 : 1);
+            return { ...ev, actor: ref(u), amount: before - u.hp + temp.absorbed, hpBefore: before, hpAfter: u.hp, killed: u.hp === 0, reason: reasonFrom(2), note, ...(temp.absorbed ? { absorbed: temp.absorbed, tempAfter: temp.tempAfter } : {}) };
         }
         case 'heal': {
             const u = needUnit();
@@ -123,6 +123,12 @@ export function applyCommand(b, c, opt) {
             if (!def.noValue && !isNaN(int(a[i]))) value = int(a[i++]);
             let turns = 2;
             if (!isNaN(int(a[i]))) turns = Math.max(1, int(a[i++]));
+            if (type === 'temp_hp') {
+                if (u.object) throw new Error('建筑无法获得临时HP');
+                // 数值为最大HP的百分比，同样受单次变化上限约束
+                const g = grantTempHp(u, Math.min(cap(u), Math.max(1, Math.round(u.maxHp * value / 100))), turns, 'player', value);
+                return { ...ev, actor: ref(u), label: effectLabel({ type, amount: g.after }), turns, debuff: false, reason: reasonFrom(i) };
+            }
             u.statuses = (u.statuses || []).filter(s => s.type !== type);
             u.statuses.push({ type, value, turns, srcSide: 'player' }); // 按回合计时（每个我方阶段开始时 -1）
             return { ...ev, actor: ref(u), label: effectLabel({ type, value }), turns, debuff: !!def.debuff, reason: reasonFrom(i) };

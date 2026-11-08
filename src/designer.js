@@ -1,6 +1,6 @@
 // AI 设计助手（纯逻辑）：生成提示词、解析回复、校验并转换成资料卡数据、导入资料卡
 import { makeUnit, makeSkill, makeMap, makeWave, makeUnitType, makeTrait, uid } from './defaults.js';
-import { EFFECTS, TRAIT_EFFECTS, MISSION_NAMES, normalizeSkill, enterCost, validateMission, DEFAULT_VISION } from './engine.js';
+import { EFFECTS, TRAIT_EFFECTS, TERRAIN_EFFECTS, terrainEffectSummary, MISSION_NAMES, normalizeSkill, enterCost, validateMission, DEFAULT_VISION } from './engine.js';
 
 export const DESIGN_TASKS = {
     story: '根据剧情创建关卡',
@@ -30,6 +30,7 @@ function terrainLine(t) {
     if (Number(t.avoid)) bits.push(`闪避${t.avoid}%`);
     if (Number(t.healPct)) bits.push(`回复${t.healPct}%`);
     if (Number(t.enterDamage) || Number(t.turnDamagePct)) bits.push('有地形伤害');
+    if (terrainEffectSummary(t)) bits.push(`落脚效果：${terrainEffectSummary(t)}`);
     if (Number(t.visionBonus)) bits.push(`视野+${t.visionBonus}`);
     if (Number(t.conceal)) bits.push(`隐蔽${t.conceal}`);
     if (t.blockSight) bits.push('遮挡视线');
@@ -55,6 +56,7 @@ export function designRules(rules = {}) {
         '- 技能 kind=support 为辅助，target 决定作用对象（tile＝传送到空地）；伤害技能的 power 为威力百分比。cooldown 为冷却回合。',
         `- 技能效果 type 只能从以下预设中选：${effectList(EFFECTS)}。`,
         `- 特质效果 type 只能从以下预设中选：${effectList(TRAIT_EFFECTS)}；属性类效果 flat=true 时为固定值，否则为百分比。`,
+        `- 地形 effects 是单位落脚（移动终点、传送、召回）时获得的效果，type 只能从以下预设中选：${effectList(TERRAIN_EFFECTS)}；例如沼泽「封印防御」、圣泉「临时HP」。没有就省略。`,
         `- 对空：单位的 antiAir＝普通攻击可以打到飞行单位（弓箭手等），技能的 antiAir＝该技能可以打到飞行单位（火球、箭雨等）。${rules.airTarget === 'antiAir' ? '当前规则：飞行单位只能被对空攻击或其他飞行单位打到，请给远程、对空类单位和技能设置 antiAir，并确保有飞行敌人时我方有对空手段。' : '当前规则下任何攻击都能打到飞行单位，antiAir 只在以后开启对空规则时生效。'}`,
         '- 兵种克制 vs：dmg 伤害倍率%（100 不变），hit 命中修正%，tough 被攻击方招架时消耗的韧性倍数（默认 1）。',
         '- 地图坐标 x、y 从 1 开始（x 列从左到右，y 行从上到下）。rows 的每个字符都必须出现在 legend 里，legend 的值是地形名（已有或本次新建的）。',
@@ -69,7 +71,7 @@ export const SCHEMA = `{
     "vs": [{ "target": "被攻击的兵种名", "dmg": 150, "hit": 10, "tough": 2 }] }],
   "terrains": [{ "name": "地形名", "symbol": "一个字符", "color": "#rrggbb", "moveCost": 1, "passable": true, "flyable": true,
     "avoid": 0, "defBonus": 0, "healPct": 0, "enterDamage": 0, "enterDamagePct": 0, "turnDamage": 0, "turnDamagePct": 0, "damageFlying": false,
-    "visionBonus": 0, "conceal": 0, "blockSight": false, "desc": "给叙事用的描述" }],
+    "visionBonus": 0, "conceal": 0, "blockSight": false, "effects": [{ "type": "效果 id", "value": 30, "turns": 1 }], "desc": "给叙事用的描述" }],
   "units": [{ "name": "单位名", "side": "player|enemy|ally", "kind": "unit|object", "type": "兵种名或省略", "icon": "棋子上的一个字", "color": "#rrggbb",
     "aliases": "故事中的称呼，逗号分隔", "keyTarget": false, "wbEntry": "对应的世界书条目名（可省略）",
     "hp": 20, "atk": 8, "matk": 4, "def": 4, "mdef": 3, "agi": 5, "mov": 5, "tough": 2, "vision": 4,
@@ -261,6 +263,12 @@ export function normalizeDesign(raw, profile, { entries = [] } = {}) {
             enterDamage: int(r.enterDamage, 0, 0, 999), enterDamagePct: int(r.enterDamagePct, 0, 0, 100),
             turnDamage: int(r.turnDamage, 0, 0, 999), turnDamagePct: int(r.turnDamagePct, 0, 0, 100), damageFlying: bool(r.damageFlying),
             visionBonus: int(r.visionBonus, 0, -10, 10), conceal: int(r.conceal, 0, 0, 20), blockSight: bool(r.blockSight), desc: str(r.desc),
+            effects: arr(r.effects).map(e => {
+                const type = effectId(TERRAIN_EFFECTS, e?.type);
+                if (!type) { warnings.push(`地形「${name}」的落脚效果「${str(e?.type)}」不是可用的预设效果，已忽略`); return null; }
+                const def = EFFECTS[type];
+                return { type, value: def.noValue ? 0 : num(e.value, def.value ?? 0, 0, 999), turns: def.instant ? 0 : int(e.turns, 1, 1, 99) };
+            }).filter(Boolean),
         });
     }
     const terrainRef = name => fresh(out.terrains, str(name)) || findBy(profile.terrains || [], str(name)) || null;

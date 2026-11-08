@@ -377,6 +377,10 @@ details[open].tsrpg-design-box > :not(summary), details[open].tsrpg-side-card > 
 .tsrpg-hpbar > .ghost.gain { background: #b9f6ca; animation: tsrpg-blink 0.6s ease-in-out infinite alternate; }
 .tsrpg-hpbar > .trail { background: #fff59d; animation: tsrpg-trail 0.5s 0.12s ease-in forwards; }
 .tsrpg-hpbar > .gain { background: #b9f6ca; }
+/* 临时HP：接在 HP 后面的白色斜纹；超出最大HP的部分半透明地叠在左端 */
+.tsrpg-hpbar > .temp, .tsrpg-card .tsrpg-hp > div.temp.temp, .tsrpg-fbar-temp { position: absolute; top: 0; bottom: 0; height: auto; background: repeating-linear-gradient(135deg, #ffffff 0 3px, #b3d4f5 3px 6px); }
+.tsrpg-hpbar > .temp.over, .tsrpg-card .tsrpg-hp > div.temp.temp.over, .tsrpg-fbar-temp.over { opacity: 0.6; }
+.tsrpg-fc-temp { white-space: nowrap; color: #8ab8e6; font-variant-numeric: tabular-nums; }
 
 /* 列表、卡片标题等处的小棋子：只显示图标 */
 .tsrpg-list-item .tsrpg-token, .tsrpg-palette-item .tsrpg-token, .tsrpg-fc-name .tsrpg-token, .tsrpg-fc-row .tsrpg-token, .tsrpg-mini-unit .tsrpg-token,
